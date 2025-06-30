@@ -1,0 +1,10 @@
+sample:
+  name: GPIOTE DPPI toggle sample
+tests:
+  sample.gpiote.dppi_toggle:
+    tags: dppi gpiote
+    filter: dt_enabled_alias_with_parent_compat("led0", "gpio-leds")
+    depends_on: gpio
+    harness: console
+    integration_platforms:
+      - nrf5340dk_nrf5340_cpuapp
