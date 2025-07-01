@@ -3,10 +3,10 @@ sample:
 tests:
   sample.boards.nrf.nrfx:
     platform_allow:
-      - nrf52840dk/nrf52840
-      - nrf9160dk/nrf9160
+      - nrf5340dk/nrf5340
+      - thing53/nrf5340
     integration_platforms:
-      - nrf52840dk/nrf52840
+      - nrf5340dk/nrf5340
     tags: board
     harness: console
     harness_config:

@@ -137,15 +137,17 @@ int main(void)
 	uint8_t in_channel, out_channel;
 	const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(GPIOTE_INST);
 
-	/* Connect GPIOTE instance IRQ to the interrupt handler */
+	#if !defined(CONFIG_GPIO)
+	// Only connect IRQ and initialize GPIOTE if Zephyr GPIO is not enabled
 	IRQ_CONNECT(DT_IRQN(GPIOTE_NODE), DT_IRQ(GPIOTE_NODE, priority), nrfx_isr,
-			NRFX_CONCAT(nrfx_gpiote_, GPIOTE_INST, _irq_handler), 0);
+				NRFX_CONCAT(nrfx_gpiote_, GPIOTE_INST, _irq_handler), 0);
 
 	err = nrfx_gpiote_init(&gpiote, 0);
 	if (err != NRFX_SUCCESS) {
 		LOG_ERR("nrfx_gpiote_init error: 0x%08X", err);
 		return 0;
 	}
+	#endif
 
 	err = configure_input_pin(&gpiote, INPUT_PIN, &in_channel);
 	if (err != NRFX_SUCCESS) {
