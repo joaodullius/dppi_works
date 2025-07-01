@@ -9,7 +9,11 @@ LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_INF);
 #define SPIM_INST NRFX_SPIM_INSTANCE(3)
 
 // SPI CS pin
-#define ADXL382_CS_PIN 47
+#define ADXL382_CS_PIN 22
+#define ADXL382_INT_PIN 19
+#define SPIM_SCK 29
+#define SPIM_MOSI 28
+#define SPIM_MISO 26
 
 // ADXL382 register address for DEVID (Chip ID)
 #define ADXL382_REG_DEVID 0x00
@@ -28,9 +32,9 @@ int main(void)
     nrf_gpio_pin_set(ADXL382_CS_PIN); // inactive
 
     nrfx_spim_config_t config = {
-        .sck_pin      = 44,
-        .mosi_pin     = 45,
-        .miso_pin     = 46,
+        .sck_pin      = SPIM_SCK,
+        .mosi_pin     = SPIM_MOSI,
+        .miso_pin     = SPIM_MISO,      
         .ss_pin       = NRF_SPIM_PIN_NOT_CONNECTED,
         .irq_priority = NRFX_SPIM_DEFAULT_CONFIG_IRQ_PRIORITY,
         .orc          = 0xFF,
