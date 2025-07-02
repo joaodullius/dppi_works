@@ -2,6 +2,7 @@
 #include <zephyr/logging/log.h>
 #include <nrfx_spim.h>
 #include <nrfx_gpiote.h>
+#include <helpers/nrfx_gppi.h>
 #include <hal/nrf_gpio.h>
 #include <hal/nrf_gpiote.h>
 
@@ -18,7 +19,8 @@ LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_INF);
 #define SPIM_MISO 26
 
 // Button SW0 pin for Thingy53
-#define BUTTON_SW0_PIN NRF_GPIO_PIN_MAP(1, 14)  // P1.14
+#define BUTTON_SW0_PIN  NRF_GPIO_PIN_MAP(1, 14)  // P1.14
+#define LED0_PIN        NRF_GPIO_PIN_MAP(1, 8) // P1.8
 
 // ADXL382 register address for DEVID (Chip ID)
 #define ADXL362_CMD_WRITE_REG   0x0A
@@ -38,39 +40,6 @@ static const nrfx_spim_t spim = SPIM_INST;
 
 // Global variable to track button press
 static volatile bool button_pressed = false;
-
-
-int16_t adxl362_read_accel(uint8_t reg_base)
-{
-
-   uint8_t tx_buf[3] = {
-        ADXL362_CMD_READ_REG,
-        reg_base,
-        0x00 // Dummy
-    };
-    uint8_t rx_buf[3] = {0};
-
-    LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
-    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
-
-    nrfx_spim_xfer_desc_t xfer = {
-        .p_tx_buffer = tx_buf,
-        .tx_length = sizeof(tx_buf),
-        .p_rx_buffer = rx_buf,
-        .rx_length = sizeof(rx_buf),
-    };
-
-    nrf_gpio_pin_clear(ADXL382_CS_PIN); // assert CS
-
-    int ret = nrfx_spim_xfer(&spim, &xfer, 0);
-    if (ret == NRFX_SUCCESS) {
-        LOG_DBG("*value = %xh", rx_buf[2]);
-    }
-    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
-    nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
-
-    return ret;
-}
 
 
 int adxl362_read_reg(uint8_t reg, uint8_t *value)
@@ -279,6 +248,67 @@ int button_init(void)
 }
 
 
+int led_init(void)
+{
+	nrfx_err_t err;
+    uint8_t out_channel;
+    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
+
+	/* Allocate a channel for the output pin */
+	err = nrfx_gpiote_channel_alloc(&gpiote, &out_channel);
+	if (err != NRFX_SUCCESS) {
+		LOG_ERR("Failed to allocate out_channel, error: 0x%08X", err);
+		return err;
+	}
+
+	static const nrfx_gpiote_output_config_t output_config = {
+		.drive         = NRF_GPIO_PIN_S0S1,
+		.input_connect = NRF_GPIO_PIN_INPUT_DISCONNECT,
+		.pull          = NRF_GPIO_PIN_NOPULL,
+	};
+	const nrfx_gpiote_task_config_t task_config = {
+		.task_ch  = out_channel,
+		.polarity = NRF_GPIOTE_POLARITY_TOGGLE,
+		.init_val = 1,
+	};
+
+	err = nrfx_gpiote_output_configure(&gpiote, LED0_PIN, &output_config,
+					   &task_config);
+	if (err != NRFX_SUCCESS) {
+		LOG_ERR("nrfx_gpiote_output_configure error: 0x%08X", err);
+		return err;
+	}
+
+	/* Enable the output task */
+	nrfx_gpiote_out_task_enable(&gpiote, LED0_PIN);
+	return NRFX_SUCCESS;
+}
+
+int configure_dppi(void)
+{
+	nrfx_err_t err;
+	uint8_t ppi_channel;
+    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
+
+	/* Allocate a DPPI channel */
+	err = nrfx_gppi_channel_alloc(&ppi_channel);
+	if (err != NRFX_SUCCESS) {
+		LOG_ERR("nrfx_gppi_channel_alloc error: 0x%08X", err);
+		return err;
+	}
+
+	/* Setup endpoints so that the input pin event triggers the output pin task */
+	nrfx_gppi_channel_endpoints_setup(ppi_channel,
+		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
+		nrfx_gpiote_out_task_address_get(&gpiote, LED0_PIN));
+
+	/* Enable the DPPI channel */
+	nrfx_gppi_channels_enable(BIT(ppi_channel));
+    LOG_INF("DPPI configured: Button SW0 -> LED0 toggle");
+	return NRFX_SUCCESS;
+}
+
+
 int main(void)
 {
 
@@ -315,6 +345,18 @@ int main(void)
     ret = button_init();
     if (ret != 0) {
         LOG_ERR("Failed to initialize button");
+        return ret;
+    }
+
+    ret = led_init();
+    if (ret != NRFX_SUCCESS) {
+        LOG_ERR("Failed to initialize LED");
+        return ret;
+    }
+
+    ret = configure_dppi();
+    if (ret != NRFX_SUCCESS) {
+        LOG_ERR("Failed to configure DPPI");
         return ret;
     }
 
