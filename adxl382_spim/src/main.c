@@ -41,7 +41,6 @@ int adxl362_read_reg(uint8_t reg, uint8_t *value)
     LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
     LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
 
-
     nrfx_spim_xfer_desc_t xfer = {
         .p_tx_buffer = tx_buf,
         .tx_length = sizeof(tx_buf),
@@ -58,18 +57,45 @@ int adxl362_read_reg(uint8_t reg, uint8_t *value)
     }
     LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
     nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
-    return NRFX_SUCCESS;
+    return ret;
 }
 
-int main(void)
+
+int adxl362_write_reg(uint8_t reg, uint8_t value)
 {
+    uint8_t tx_buf[3] = {
+        ADXL362_CMD_WRITE_REG,
+        reg,
+        value
+    };
+    uint8_t rx_buf[3] = {0};
 
-    int ret;
-    uint8_t devid = 0;
+    nrfx_spim_xfer_desc_t xfer = {
+        .p_tx_buffer = tx_buf,
+        .tx_length = sizeof(tx_buf),
+        .p_rx_buffer = rx_buf,
+        .rx_length = sizeof(rx_buf),
+    };
 
-    LOG_INF("Starting ADXL382 SPI test");
+    LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
 
-    // Configure CS pin manually
+    nrf_gpio_pin_clear(ADXL382_CS_PIN); // assert CS
+
+    int ret = nrfx_spim_xfer(&spim, &xfer, 0);
+    if (ret == NRFX_SUCCESS) {
+        LOG_DBG("Wrote reg 0x%02X: 0x%02X", reg, value);
+    }
+    nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
+
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
+
+    return ret;
+}
+
+int adxl362_init()
+{
+ // Configure CS pin manually
     nrf_gpio_cfg_output(ADXL382_CS_PIN);
     nrf_gpio_pin_set(ADXL382_CS_PIN); // inactive
 
@@ -83,6 +109,24 @@ int main(void)
 		LOG_WRN("Failed to init SPIM, error: 0x%08X", err);
 		return -1;
 	}
+    LOG_INF("ADXL362 SPI initialized successfully");
+
+    // Configure INT pin
+    nrf_gpio_cfg_input(ADXL382_INT_PIN, NRF_GPIO_PIN_PULLUP);
+    LOG_INF("ADXL362 INT pin configured");
+
+    return 0;
+}
+
+int main(void)
+{
+
+    int ret;
+    uint8_t devid = 0;
+
+    LOG_INF("Starting ADXL382 SPI test");
+
+    adxl362_init();
 
     ret = adxl362_read_reg(ADXL362_REG_DEVID_AD, &devid);
     if (ret == NRFX_SUCCESS) {
@@ -93,6 +137,18 @@ int main(void)
     } else {
         LOG_ERR("Failed to read from ADXL362 (err %d)", ret);
     }
+
+    ret = adxl362_write_reg(ADXL362_REG_POWER_CTL, ADXL362_MEASURE_MODE);
+    if (ret == NRFX_SUCCESS) {
+        LOG_INF("Measurement mode enabled");
+        k_msleep(10);  // Pequeno delay para o sensor estabilizar
+    } else {
+        LOG_ERR("Failed to set measurement mode");
+    }
+
+    uint8_t power_ctl;
+    adxl362_read_reg(ADXL362_REG_POWER_CTL, &power_ctl);
+    LOG_INF("POWER_CTL = 0x%02X", power_ctl);
 
 
 	return 0;
