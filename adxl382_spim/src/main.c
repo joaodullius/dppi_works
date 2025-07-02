@@ -27,7 +27,43 @@ LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_INF);
 #define ADXL362_REG_YDATA_L   0x10
 #define ADXL362_REG_ZDATA_L   0x12
 
+#define GRAVITY_M_S2 9.80665f
+
 static const nrfx_spim_t spim = SPIM_INST;
+
+
+int16_t adxl362_read_accel(uint8_t reg_base)
+{
+
+   uint8_t tx_buf[3] = {
+        ADXL362_CMD_READ_REG,
+        reg_base,
+        0x00 // Dummy
+    };
+    uint8_t rx_buf[3] = {0};
+
+    LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
+
+    nrfx_spim_xfer_desc_t xfer = {
+        .p_tx_buffer = tx_buf,
+        .tx_length = sizeof(tx_buf),
+        .p_rx_buffer = rx_buf,
+        .rx_length = sizeof(rx_buf),
+    };
+
+    nrf_gpio_pin_clear(ADXL382_CS_PIN); // assert CS
+
+    int ret = nrfx_spim_xfer(&spim, &xfer, 0);
+    if (ret == NRFX_SUCCESS) {
+        LOG_DBG("*value = %xh", rx_buf[2]);
+    }
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
+    nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
+
+    return ret;
+}
+
 
 int adxl362_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -150,6 +186,59 @@ int main(void)
     adxl362_read_reg(ADXL362_REG_POWER_CTL, &power_ctl);
     LOG_INF("POWER_CTL = 0x%02X", power_ctl);
 
+    while (1) {
+        // Read accelerometer data
+        // Read X, Y, Z data registers
+        uint8_t axl, axh, ayl, ayh, azl, azh;
+    
+        uint8_t tx_buf[8] = {
+            ADXL362_CMD_READ_REG,
+            ADXL362_REG_XDATA_L, // First register address
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // Dummy
+        };
+        uint8_t rx_buf[8] = {0};
+
+        LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
+        LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
+
+        nrfx_spim_xfer_desc_t xfer = {
+            .p_tx_buffer = tx_buf,
+            .tx_length = sizeof(tx_buf),
+            .p_rx_buffer = rx_buf,
+            .rx_length = sizeof(rx_buf),
+        };
+
+        nrf_gpio_pin_clear(ADXL382_CS_PIN); // assert CS
+
+        ret = nrfx_spim_xfer(&spim, &xfer, 0);
+        if (ret == NRFX_SUCCESS) {
+            axl = rx_buf[2]; // O valor lido está na terceira posição
+            axh = rx_buf[3]; // O valor lido está na quarta posição
+            ayl = rx_buf[4]; // O valor lido está na quinta posição
+            ayh = rx_buf[5]; // O valor lido está na sexta posição
+            azl = rx_buf[6]; // O valor lido está na sétima posição
+            azh = rx_buf[7]; // O valor lido está na oitava
+        }
+        LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
+        nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
+       
+        int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes with correct sign extension
+        float ax_mg = ax * 1.0f; // Convert to mg
+        float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+   
+        int16_t ay = (int16_t)((ayh << 8) | ayl);  // Sign-extended by hardware
+        float ay_mg = ay * 1.0f; // Convert to mg
+        float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+        int16_t az = (int16_t)((azh << 8) | azl);  // Sign-extended by hardware
+        float az_mg = az * 1.0f; // Convert to mg
+        float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+        LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
+        
+
+        k_msleep(1000);
+    }
 
 	return 0;
 }
