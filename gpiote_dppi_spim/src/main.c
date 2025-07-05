@@ -21,7 +21,6 @@ LOG_MODULE_REGISTER(adxl362, LOG_LEVEL_DBG);
 #define SPIM_INST NRFX_SPIM_INSTANCE(3)
 // Button SW0 pin for Thingy53
 #define BUTTON_SW0_PIN  NRF_GPIO_PIN_MAP(1, 14)  // P1.14
-#define LED0_PIN        NRF_GPIO_PIN_MAP(1, 8) // P1.8
 
 static const nrfx_spim_t spim = SPIM_INST;
 
@@ -84,8 +83,14 @@ static K_SEM_DEFINE(spim_sem, 0, 1);
 //Create bool to indicate a transfer prepared for start event
 static bool spim_dppi_transfer = false;
 
+
+/* Function Prototypes */
+static int adxl362_init(void);
+static int adxl362_read_reg(uint8_t reg, uint8_t *value);
+static int adxl362_write_reg(uint8_t reg, uint8_t value);
 int prepare_spim_transfer(void);
 static void adxl362_gpiote_handler(nrfx_gpiote_pin_t pin, nrfx_gpiote_trigger_t trigger, void *context);
+static void spim_event_handler(nrfx_spim_evt_t const *p_event, void *p_context);
 
 /* SPI Event Handler for Non-blocking Operation */
 static void spim_event_handler(nrfx_spim_evt_t const *p_event, void *p_context)
@@ -309,8 +314,7 @@ static void adxl362_gpiote_handler(nrfx_gpiote_pin_t pin,
 // Function to read accelerometer data
 int prepare_spim_transfer(void)
 {
-    
-    // LOG_HEXDUMP_DBG(spi_tx_buf, sizeof(spi_tx_buf), "TX Buffer");
+
 	
     // Assert CS before transfer
     nrf_gpio_pin_clear(ADXL362_CS_PIN);
@@ -336,42 +340,6 @@ int prepare_spim_transfer(void)
     return 0;
 }
 
-int led_init(void)
-{
-	nrfx_err_t err;
-    uint8_t out_channel;
-    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
-
-	/* Allocate a channel for the output pin */
-	err = nrfx_gpiote_channel_alloc(&gpiote, &out_channel);
-	if (err != NRFX_SUCCESS) {
-		LOG_ERR("Failed to allocate out_channel, error: 0x%08X", err);
-		return err;
-	}
-
-	static const nrfx_gpiote_output_config_t output_config = {
-		.drive         = NRF_GPIO_PIN_S0S1,
-		.input_connect = NRF_GPIO_PIN_INPUT_DISCONNECT,
-		.pull          = NRF_GPIO_PIN_NOPULL,
-	};
-	const nrfx_gpiote_task_config_t task_config = {
-		.task_ch  = out_channel,
-		.polarity = NRF_GPIOTE_POLARITY_TOGGLE,
-		.init_val = 1,
-	};
-
-	err = nrfx_gpiote_output_configure(&gpiote, LED0_PIN, &output_config,
-					   &task_config);
-	if (err != NRFX_SUCCESS) {
-		LOG_ERR("nrfx_gpiote_output_configure error: 0x%08X", err);
-		return err;
-	}
-
-	/* Enable the output task */
-	nrfx_gpiote_out_task_enable(&gpiote, LED0_PIN);
-	return NRFX_SUCCESS;
-}
-
 int configure_dppi(void)
 {
 	nrfx_err_t err;
@@ -385,16 +353,14 @@ int configure_dppi(void)
 		return err;
 	}
 
-	/* Setup endpoints so that the input pin event triggers the output pin task */
+	/* Setup endpoints so that the input pin event triggers the SPIM start task */
 	nrfx_gppi_channel_endpoints_setup(ppi_channel,
 		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
-		nrfx_gpiote_out_task_address_get(&gpiote, LED0_PIN));
-
-    nrfx_gppi_task_endpoint_setup(ppi_channel, nrfx_spim_start_task_address_get(&spim));
+		nrfx_spim_start_task_address_get(&spim));
 
 	/* Enable the DPPI channel */
 	nrfx_gppi_channels_enable(BIT(ppi_channel));
-    LOG_INF("DPPI configured: Button SW0 -> LED0 toggle");
+    LOG_INF("DPPI configured: Button SW0 -> SPIM start");
 	return NRFX_SUCCESS;
 }
 
@@ -456,13 +422,6 @@ int main(void)
     uint8_t power_ctl;
     adxl362_read_reg(ADXL362_REG_POWER_CTL, &power_ctl);
     LOG_DBG("POWER_CTL = 0x%02X", power_ctl);
-
-
-    ret = led_init();
-    if (ret != NRFX_SUCCESS) {
-        LOG_ERR("Failed to initialize LED");
-        return ret;
-    }
 
     prepare_spim_transfer();
 

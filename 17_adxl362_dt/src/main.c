@@ -72,9 +72,19 @@ static const nrfx_spim_t spim = SPIM_INST;
 /* Constants */
 #define GRAVITY_M_S2 9.80665f
 
+// SPI transfer buffers for accelerometer reading
+static uint8_t spi_tx_buf[8] = {
+    ADXL362_CMD_READ_REG,
+    ADXL362_REG_XDATA_L, // First register address
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // Dummy
+};
+static uint8_t spi_rx_buf[8] = {0};
 
 //Create semaphore for SPIM transfer
 static K_SEM_DEFINE(spim_sem, 0, 1);
+
+//Create bool to indicate a transfer prepared for start event
+static bool spim_dppi_transfer = false;
 
 /* Workqueue for accelerometer data processing */
 static struct k_work_q adxl362_workq;
@@ -86,7 +96,7 @@ static struct k_work adxl362_work;
 static int adxl362_init(void);
 static int adxl362_read_reg(uint8_t reg, uint8_t *value);
 static int adxl362_write_reg(uint8_t reg, uint8_t value);
-static int16_t read_axis(uint8_t reg_base);
+int prepare_spim_transfer(void);
 static void adxl362_gpiote_handler(nrfx_gpiote_pin_t pin, nrfx_gpiote_trigger_t trigger, void *context);
 static void adxl362_work_handler(struct k_work *work);
 static void spim_event_handler(nrfx_spim_evt_t const *p_event, void *p_context);
@@ -97,7 +107,46 @@ static void spim_event_handler(nrfx_spim_evt_t const *p_event, void *p_context)
     ARG_UNUSED(p_context);
 
     if (p_event->type == NRFX_SPIM_EVENT_DONE) {
-        k_sem_give(&spim_sem);
+        LOG_DBG("SPIM transfer done");
+        if(!spim_dppi_transfer) {
+            LOG_DBG("Regular SPIM transfer, doing semaphore release");
+  			k_sem_give(&spim_sem);
+            return; // If transfer was not prepared, skip semaphore release
+        }
+        else {
+            LOG_DBG("SPIM transfer was prepared for DPPI, not releasing semaphore");
+            // Process the received accelerometer data
+            uint8_t axl = spi_rx_buf[2]; // X low byte
+            uint8_t axh = spi_rx_buf[3]; // X high byte
+            uint8_t ayl = spi_rx_buf[4]; // Y low byte
+            uint8_t ayh = spi_rx_buf[5]; // Y high byte
+            uint8_t azl = spi_rx_buf[6]; // Z low byte
+            uint8_t azh = spi_rx_buf[7]; // Z high byte
+
+            int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes
+            float ax_mg = ax * 1.0f; // Convert to mg
+            float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+            int16_t ay = (int16_t)((ayh << 8) | ayl);  
+            float ay_mg = ay * 1.0f; // Convert to mg
+            float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+            int16_t az = (int16_t)((azh << 8) | azl);  
+            float az_mg = az * 1.0f; // Convert to mg
+            float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+            LOG_INF("SPIM task-triggered read complete!");
+            LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
+            
+            // Deassert CS after transfer
+            nrf_gpio_pin_set(ADXL362_CS_PIN);
+            
+            // Prepare the next transfer for the next button press
+            spim_dppi_transfer = false; // Reset flag for next transfer
+
+            
+        }
+       
     }
 }
 
@@ -260,18 +309,6 @@ int gpiote_input_init(void)
     return 0;
 }
 
-int16_t read_axis(uint8_t reg_base)
-{
-    uint8_t lsb, msb;
-    if (adxl362_read_reg(reg_base, &lsb) < 0) return 0;
-    if (adxl362_read_reg(reg_base + 1, &msb) < 0) return 0;
-
-    int16_t value = (int16_t)((msb << 8) | lsb);  // Sign-extended by hardware
-    LOG_DBG("Axis 0x%02X: LSB=0x%02X, MSB=0x%02X -> %d mg", reg_base, lsb, msb, value);
-
-    return value;
-}
-
 /* Interrupt Handlers and Workqueue */
 static void adxl362_gpiote_handler(nrfx_gpiote_pin_t pin,
                                    nrfx_gpiote_trigger_t trigger,
@@ -286,24 +323,40 @@ static void adxl362_gpiote_handler(nrfx_gpiote_pin_t pin,
     k_work_submit_to_queue(&adxl362_workq, &adxl362_work);
 }
 
+// Function to read accelerometer data
+int prepare_spim_transfer(void)
+{
+
+	
+    // Assert CS before transfer
+    nrf_gpio_pin_clear(ADXL362_CS_PIN);
+
+    nrfx_spim_xfer_desc_t xfer = {
+        .p_tx_buffer = spi_tx_buf,
+        .tx_length = sizeof(spi_tx_buf),
+        .p_rx_buffer = spi_rx_buf,
+        .rx_length = sizeof(spi_rx_buf),
+    };
+
+    // Configure the transfer
+    nrfx_err_t err = nrfx_spim_xfer(&spim, &xfer, 0);
+    if (err != NRFX_SUCCESS) {
+        LOG_ERR("Failed to prepare SPIM transfer (err 0x%08X)", err);
+        nrf_gpio_pin_set(ADXL362_CS_PIN); // Release CS on error
+        return -1;
+    }
+    
+    spim_dppi_transfer = true; // Indicate transfer is prepared
+
+    LOG_DBG("SPIM read started");
+    return 0;
+}
+
 static void adxl362_work_handler(struct k_work *work)
 {
     LOG_INF("Processing accelerometer data in workqueue...");
     
-    // Read accelerometer data
-    int16_t ax = read_axis(ADXL362_REG_XDATA_L);
-    int16_t ay = read_axis(ADXL362_REG_YDATA_L);
-    int16_t az = read_axis(ADXL362_REG_ZDATA_L);
-
-    float ax_mg = ax * 1.0f;
-    float ay_mg = ay * 1.0f;
-    float az_mg = az * 1.0f;
-
-    float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f;
-    float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f;
-    float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f;
-
-    LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
+	prepare_spim_transfer();
 }
 
 
