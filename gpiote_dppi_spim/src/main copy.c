@@ -49,54 +49,45 @@ static uint8_t spi_rx_buf[8] = {0};
 //Create semaphore for SPIM transfer
 static K_SEM_DEFINE(spim_sem, 0, 1);
 
-//Create bool to indicate a transfer prepared for start event
-static bool spim_dppi_transfer = false;
 
-
+int prepare_spim_transfer(void);
 // SPIM event handler - called when SPI transfer completes
 static void spim_handler(nrfx_spim_evt_t const *p_event, void *p_context)
 {
+
     if (p_event->type == NRFX_SPIM_EVENT_DONE) {
-        LOG_DBG("SPIM transfer done");
-        if(!spim_dppi_transfer) {
-            LOG_DBG("Regular SPIM transfer, doing semaphore release");
-            k_sem_give(&spim_sem); // <=== LIBERA o semáforo aqui
-            return; // If transfer was not prepared, skip semaphore release
-        }
-        else {
-            LOG_DBG("SPIM transfer was prepared for DPPI, not releasing semaphore");
-            // Process the received accelerometer data
-            uint8_t axl = spi_rx_buf[2]; // X low byte
-            uint8_t axh = spi_rx_buf[3]; // X high byte
-            uint8_t ayl = spi_rx_buf[4]; // Y low byte
-            uint8_t ayh = spi_rx_buf[5]; // Y high byte
-            uint8_t azl = spi_rx_buf[6]; // Z low byte
-            uint8_t azh = spi_rx_buf[7]; // Z high byte
 
-            int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes
-            float ax_mg = ax * 1.0f; // Convert to mg
-            float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        k_sem_give(&spim_sem); // Signal that transfer is done
+        // // Process the received accelerometer data
+        // uint8_t axl = spi_rx_buf[2]; // X low byte
+        // uint8_t axh = spi_rx_buf[3]; // X high byte
+        // uint8_t ayl = spi_rx_buf[4]; // Y low byte
+        // uint8_t ayh = spi_rx_buf[5]; // Y high byte
+        // uint8_t azl = spi_rx_buf[6]; // Z low byte
+        // uint8_t azh = spi_rx_buf[7]; // Z high byte
 
-            int16_t ay = (int16_t)((ayh << 8) | ayl);  
-            float ay_mg = ay * 1.0f; // Convert to mg
-            float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        // int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes
+        // float ax_mg = ax * 1.0f; // Convert to mg
+        // float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
 
-            int16_t az = (int16_t)((azh << 8) | azl);  
-            float az_mg = az * 1.0f; // Convert to mg
-            float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        // int16_t ay = (int16_t)((ayh << 8) | ayl);  
+        // float ay_mg = ay * 1.0f; // Convert to mg
+        // float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
 
-            LOG_INF("SPIM task-triggered read complete!");
-            LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
-            
-            // Deassert CS after transfer
-            nrf_gpio_pin_set(ADXL382_CS_PIN);
-            
-            // Prepare the next transfer for the next button press
-            spim_dppi_transfer = false; // Reset flag for next transfer
-            prepare_spim_transfer();
-            
-        }
-       
+        // int16_t az = (int16_t)((azh << 8) | azl);  
+        // float az_mg = az * 1.0f; // Convert to mg
+        // float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+
+        // LOG_INF("SPIM task-triggered read complete!");
+        // LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
+        
+        // // Deassert CS after transfer
+        // nrf_gpio_pin_set(ADXL382_CS_PIN);
+        
+        // // Prepare the next transfer for the next button press
+        // // Small delay to ensure proper timing
+        // //k_busy_wait(100); // 100 microseconds
+        // prepare_spim_transfer();
     }
 }
 
@@ -123,7 +114,6 @@ int adxl362_read_reg(uint8_t reg, uint8_t *value)
 
     int ret = nrfx_spim_xfer(&spim, &xfer, 0);
     if (ret == NRFX_SUCCESS) {
-        k_sem_take(&spim_sem, K_MSEC(100));  // Espera até a conclusão
         *value = rx_buf[2]; // O valor lido está na terceira posição
         LOG_DBG("*value = %xh", rx_buf[2]);
     }
@@ -158,7 +148,6 @@ int adxl362_write_reg(uint8_t reg, uint8_t value)
 
     int ret = nrfx_spim_xfer(&spim, &xfer, 0);
     if (ret == NRFX_SUCCESS) {
-        k_sem_take(&spim_sem, K_MSEC(100));  // Espera até a conclusão
         LOG_DBG("Wrote reg 0x%02X: 0x%02X", reg, value);
     }
     nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
@@ -231,8 +220,6 @@ int prepare_spim_transfer(void)
         return -1;
     }
     
-    spim_dppi_transfer = true; // Indicate transfer is prepared
-
     LOG_DBG("SPIM transfer prepared and ready for task trigger");
     return 0;
 }
@@ -343,8 +330,7 @@ int configure_dppi(void)
 		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
 		nrfx_gpiote_out_task_address_get(&gpiote, LED0_PIN));
 
-    nrfx_gppi_task_endpoint_setup(ppi_channel, nrfx_spim_start_task_address_get(&spim));
-
+    //nrfx_gppi_task_endpoint_setup(ppi_channel, nrfx_spim_start_task_address_get(&spim));
 	/* Enable the DPPI channel */
 	nrfx_gppi_channels_enable(BIT(ppi_channel));
     LOG_INF("DPPI configured: Button SW0 -> LED0 toggle");
@@ -397,7 +383,7 @@ int main(void)
         return ret;
     }
 
-    prepare_spim_transfer();
+    //prepare_spim_transfer();
 
     ret = configure_dppi();
     if (ret != NRFX_SUCCESS) {

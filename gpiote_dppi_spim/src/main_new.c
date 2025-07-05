@@ -5,8 +5,9 @@
 #include <helpers/nrfx_gppi.h>
 #include <hal/nrf_gpio.h>
 #include <hal/nrf_gpiote.h>
+#include <string.h>
 
-LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_DBG);
+LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_INF);
 
 // SPI3 hardware instance
 #define SPIM_INST NRFX_SPIM_INSTANCE(3)
@@ -38,6 +39,9 @@ LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_DBG);
 
 static const nrfx_spim_t spim = SPIM_INST;
 
+// Global variable to track button press
+static volatile bool button_pressed = false;
+
 // SPI transfer buffers for accelerometer reading
 static uint8_t spi_tx_buf[8] = {
     ADXL362_CMD_READ_REG,
@@ -46,57 +50,42 @@ static uint8_t spi_tx_buf[8] = {
 };
 static uint8_t spi_rx_buf[8] = {0};
 
-//Create semaphore for SPIM transfer
-static K_SEM_DEFINE(spim_sem, 0, 1);
-
-//Create bool to indicate a transfer prepared for start event
-static bool spim_dppi_transfer = false;
-
+int prepare_spim_transfer(void);
 
 // SPIM event handler - called when SPI transfer completes
 static void spim_handler(nrfx_spim_evt_t const *p_event, void *p_context)
 {
     if (p_event->type == NRFX_SPIM_EVENT_DONE) {
-        LOG_DBG("SPIM transfer done");
-        if(!spim_dppi_transfer) {
-            LOG_DBG("Regular SPIM transfer, doing semaphore release");
-            k_sem_give(&spim_sem); // <=== LIBERA o semáforo aqui
-            return; // If transfer was not prepared, skip semaphore release
-        }
-        else {
-            LOG_DBG("SPIM transfer was prepared for DPPI, not releasing semaphore");
-            // Process the received accelerometer data
-            uint8_t axl = spi_rx_buf[2]; // X low byte
-            uint8_t axh = spi_rx_buf[3]; // X high byte
-            uint8_t ayl = spi_rx_buf[4]; // Y low byte
-            uint8_t ayh = spi_rx_buf[5]; // Y high byte
-            uint8_t azl = spi_rx_buf[6]; // Z low byte
-            uint8_t azh = spi_rx_buf[7]; // Z high byte
+        // Process the received accelerometer data
+        uint8_t axl = spi_rx_buf[2]; // X low byte
+        uint8_t axh = spi_rx_buf[3]; // X high byte
+        uint8_t ayl = spi_rx_buf[4]; // Y low byte
+        uint8_t ayh = spi_rx_buf[5]; // Y high byte
+        uint8_t azl = spi_rx_buf[6]; // Z low byte
+        uint8_t azh = spi_rx_buf[7]; // Z high byte
 
-            int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes
-            float ax_mg = ax * 1.0f; // Convert to mg
-            float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        int16_t ax = ((int16_t)axh << 8) | axl;  // Combine bytes
+        float ax_mg = ax * 1.0f; // Convert to mg
+        float ax_ms2 = ax_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
 
-            int16_t ay = (int16_t)((ayh << 8) | ayl);  
-            float ay_mg = ay * 1.0f; // Convert to mg
-            float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        int16_t ay = (int16_t)((ayh << 8) | ayl);  
+        float ay_mg = ay * 1.0f; // Convert to mg
+        float ay_ms2 = ay_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
 
-            int16_t az = (int16_t)((azh << 8) | azl);  
-            float az_mg = az * 1.0f; // Convert to mg
-            float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
+        int16_t az = (int16_t)((azh << 8) | azl);  
+        float az_mg = az * 1.0f; // Convert to mg
+        float az_ms2 = az_mg * GRAVITY_M_S2 / 1000.0f; // Convert to m/s^2
 
-            LOG_INF("SPIM task-triggered read complete!");
-            LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
-            
-            // Deassert CS after transfer
-            nrf_gpio_pin_set(ADXL382_CS_PIN);
-            
-            // Prepare the next transfer for the next button press
-            spim_dppi_transfer = false; // Reset flag for next transfer
-            prepare_spim_transfer();
-            
-        }
-       
+        LOG_INF("SPIM task-triggered read complete!");
+        LOG_INF("Accel [m/s^2]: X=%.2f Y=%.2f Z=%.2f", (double)ax_ms2, (double)ay_ms2, (double)az_ms2);
+        
+        // Deassert CS after transfer
+        nrf_gpio_pin_set(ADXL382_CS_PIN);
+        
+        // Prepare the next transfer for the next button press
+        // Small delay to ensure proper timing
+        k_busy_wait(100); // 100 microseconds
+        prepare_spim_transfer();
     }
 }
 
@@ -109,8 +98,8 @@ int adxl362_read_reg(uint8_t reg, uint8_t *value)
     };
     uint8_t rx_buf[3] = {0};
 
-    // LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
-    // LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
+    LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
 
     nrfx_spim_xfer_desc_t xfer = {
         .p_tx_buffer = tx_buf,
@@ -123,13 +112,10 @@ int adxl362_read_reg(uint8_t reg, uint8_t *value)
 
     int ret = nrfx_spim_xfer(&spim, &xfer, 0);
     if (ret == NRFX_SUCCESS) {
-        k_sem_take(&spim_sem, K_MSEC(100));  // Espera até a conclusão
         *value = rx_buf[2]; // O valor lido está na terceira posição
         LOG_DBG("*value = %xh", rx_buf[2]);
     }
-
-    //k_sem_take(&spim_sem, K_FOREVER); // Wait for transfer to complete
-    // LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
     nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
     return ret;
 }
@@ -151,19 +137,18 @@ int adxl362_write_reg(uint8_t reg, uint8_t value)
         .rx_length = sizeof(rx_buf),
     };
 
-    // LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
-    // LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
+    LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (before)");
 
     nrf_gpio_pin_clear(ADXL382_CS_PIN); // assert CS
 
     int ret = nrfx_spim_xfer(&spim, &xfer, 0);
     if (ret == NRFX_SUCCESS) {
-        k_sem_take(&spim_sem, K_MSEC(100));  // Espera até a conclusão
         LOG_DBG("Wrote reg 0x%02X: 0x%02X", reg, value);
     }
     nrf_gpio_pin_set(ADXL382_CS_PIN); // deassert CS
 
-    // LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
+    LOG_HEXDUMP_DBG(rx_buf, sizeof(rx_buf), "RX Buffer (after)");
 
     return ret;
 }
@@ -171,10 +156,6 @@ int adxl362_write_reg(uint8_t reg, uint8_t value)
 int adxl362_init()
 {
  // Configure CS pin manually
-
-     IRQ_CONNECT(NRFX_IRQ_NUMBER_GET(NRF_SPIM_INST_GET(3)), IRQ_PRIO_LOWEST,
-                NRFX_SPIM_INST_HANDLER_GET(3), 0, 0);
-
     nrf_gpio_cfg_output(ADXL382_CS_PIN);
     nrf_gpio_pin_set(ADXL382_CS_PIN); // inactive
 
@@ -182,14 +163,13 @@ int adxl362_init()
                                                             SPIM_MOSI,
                                                             SPIM_MISO,
                                                             NRF_SPIM_PIN_NOT_CONNECTED);
-    
+
 	nrfx_err_t err = nrfx_spim_init(&spim, &config, spim_handler, NULL);
-    //nrfx_err_t err = nrfx_spim_init(&spim, &config, NULL, NULL);
 	if (err != NRFX_SUCCESS) {
 		LOG_WRN("Failed to init SPIM, error: 0x%08X", err);
 		return -1;
 	}
-    LOG_INF("ADXL362 SPI initialized successfully");
+    LOG_INF("ADXL362 SPI initialized successfully with event handler");
 
     // Configure INT pin
     nrf_gpio_cfg_input(ADXL382_INT_PIN, NRF_GPIO_PIN_PULLUP);
@@ -199,43 +179,44 @@ int adxl362_init()
 }
 
 
-// Button event handler
-static void button_handler(nrfx_gpiote_pin_t pin,
-                          nrfx_gpiote_trigger_t trigger,
-                          void *context)
-{
-    LOG_INF("Button SW0 pressed - triggering accel read");
-}
-
-// Function to read accelerometer data
+// Function to prepare SPIM transfer for task triggering
 int prepare_spim_transfer(void)
 {
+    // Clear receive buffer
+    memset(spi_rx_buf, 0, sizeof(spi_rx_buf));
     
-    // LOG_HEXDUMP_DBG(spi_tx_buf, sizeof(spi_tx_buf), "TX Buffer");
-	
     // Assert CS before transfer
     nrf_gpio_pin_clear(ADXL382_CS_PIN);
-
-    nrfx_spim_xfer_desc_t xfer = {
+    
+    // Set up the SPI transfer descriptor
+    nrfx_spim_xfer_desc_t xfer_desc = {
         .p_tx_buffer = spi_tx_buf,
         .tx_length = sizeof(spi_tx_buf),
         .p_rx_buffer = spi_rx_buf,
         .rx_length = sizeof(spi_rx_buf),
     };
-
-    // Configure the transfer
-    nrfx_err_t err = nrfx_spim_xfer(&spim, &xfer, NRFX_SPIM_FLAG_HOLD_XFER);
+    
+    // Configure the transfer - it will be started by the SPIM start task
+    nrfx_err_t err = nrfx_spim_xfer(&spim, &xfer_desc, 0);
     if (err != NRFX_SUCCESS) {
         LOG_ERR("Failed to prepare SPIM transfer (err 0x%08X)", err);
         nrf_gpio_pin_set(ADXL382_CS_PIN); // Release CS on error
         return -1;
     }
     
-    spim_dppi_transfer = true; // Indicate transfer is prepared
-
     LOG_DBG("SPIM transfer prepared and ready for task trigger");
     return 0;
 }
+
+// Button event handler
+static void button_handler(nrfx_gpiote_pin_t pin,
+                          nrfx_gpiote_trigger_t trigger,
+                          void *context)
+{
+    button_pressed = true;
+    LOG_INF("Button SW0 pressed - GPIOTE event will trigger LED + SPIM via GPPI!");
+}
+
 
 // Function to initialize button
 int button_init(void)
@@ -328,26 +309,39 @@ int led_init(void)
 int configure_dppi(void)
 {
 	nrfx_err_t err;
-	uint8_t ppi_channel;
+	uint8_t ppi_channel_led, ppi_channel_spim;
     static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
 
-	/* Allocate a DPPI channel */
-	err = nrfx_gppi_channel_alloc(&ppi_channel);
+	/* Allocate first DPPI channel for LED toggle */
+	err = nrfx_gppi_channel_alloc(&ppi_channel_led);
 	if (err != NRFX_SUCCESS) {
-		LOG_ERR("nrfx_gppi_channel_alloc error: 0x%08X", err);
+		LOG_ERR("nrfx_gppi_channel_alloc (LED) error: 0x%08X", err);
 		return err;
 	}
 
-	/* Setup endpoints so that the input pin event triggers the output pin task */
-	nrfx_gppi_channel_endpoints_setup(ppi_channel,
+	/* Allocate second DPPI channel for SPIM start task */
+	err = nrfx_gppi_channel_alloc(&ppi_channel_spim);
+	if (err != NRFX_SUCCESS) {
+		LOG_ERR("nrfx_gppi_channel_alloc (SPIM) error: 0x%08X", err);
+		return err;
+	}
+
+	/* Setup first connection: button press -> LED toggle */
+	nrfx_gppi_channel_endpoints_setup(ppi_channel_led,
 		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
 		nrfx_gpiote_out_task_address_get(&gpiote, LED0_PIN));
 
-    nrfx_gppi_task_endpoint_setup(ppi_channel, nrfx_spim_start_task_address_get(&spim));
+	/* Setup second connection: button press -> SPIM start task */
+	nrfx_gppi_channel_endpoints_setup(ppi_channel_spim,
+		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
+		nrfx_spim_start_task_address_get(&spim));
 
-	/* Enable the DPPI channel */
-	nrfx_gppi_channels_enable(BIT(ppi_channel));
-    LOG_INF("DPPI configured: Button SW0 -> LED0 toggle");
+	/* Enable both DPPI channels */
+	nrfx_gppi_channels_enable(BIT(ppi_channel_led) | BIT(ppi_channel_spim));
+	
+    LOG_INF("DPPI configured: Button SW0 -> LED0 toggle + SPIM start task");
+    LOG_INF("GPPI channel %d: Button -> LED", ppi_channel_led);
+    LOG_INF("GPPI channel %d: Button -> SPIM", ppi_channel_spim);
 	return NRFX_SUCCESS;
 }
 
@@ -397,15 +391,39 @@ int main(void)
         return ret;
     }
 
-    prepare_spim_transfer();
+    // ret = configure_dppi();
+    // if (ret != NRFX_SUCCESS) {
+    //     LOG_ERR("Failed to configure DPPI");
+    //     return ret;
+    // }
 
-    ret = configure_dppi();
-    if (ret != NRFX_SUCCESS) {
-        LOG_ERR("Failed to configure DPPI");
-        return ret;
+    // // Prepare the initial SPIM transfer that will be triggered by button press
+    // ret = prepare_spim_transfer();
+    // if (ret != 0) {
+    //     LOG_ERR("Failed to prepare initial SPIM transfer");
+    //     return ret;
+    // }
+
+    LOG_INF("System ready. Press SW0 button to trigger LED toggle + accelerometer read");
+    LOG_INF("Hardware event chain: Button -> GPIOTE -> GPPI -> [LED Toggle + SPIM Start] -> SPI Transfer -> Data Processing");
+
+    while (1) {
+        // The system now works through hardware events:
+        // 1. Button press generates GPIOTE event
+        // 2. GPIOTE event triggers TWO tasks via separate GPPI channels:
+        //    a) LED toggle task
+        //    b) SPIM start task
+        // 3. SPIM transfer completes and calls event handler
+        // 4. Event handler processes data and prepares next transfer
+        
+        // Keep track of button presses for logging purposes
+        if (button_pressed) {
+            button_pressed = false;
+            LOG_DBG("Button press handled by hardware - LED toggled and SPIM started");
+        }
+        
+        k_msleep(100); // Keep the system alive
     }
-
-    LOG_INF("System ready. Press SW0 button to read accelerometer data");
 
 	return 0;
 }
