@@ -355,7 +355,7 @@ int configure_dppi(void)
 
 	/* Setup endpoints so that the input pin event triggers the SPIM start task */
 	nrfx_gppi_channel_endpoints_setup(ppi_channel,
-		nrfx_gpiote_in_event_address_get(&gpiote, BUTTON_SW0_PIN),
+		nrfx_gpiote_in_event_address_get(&gpiote, gpiote_input_pin),
 		nrfx_spim_start_task_address_get(&spim));
 
 	/* Enable the DPPI channel */
