@@ -23,16 +23,20 @@ LOG_MODULE_REGISTER(adxl382, LOG_LEVEL_INF);
 #define LED0_PIN        NRF_GPIO_PIN_MAP(1, 8) // P1.8
 
 // ADXL382 register address for DEVID (Chip ID)
-#define ADXL362_CMD_WRITE_REG   0x0A
-#define ADXL362_CMD_READ_REG    0x0B
-#define ADXL362_REG_DEVID_AD    0x00
+#define ADXL362_CMD_WRITE_REG           0x0A
+#define ADXL362_CMD_READ_REG            0x0B
+#define ADXL362_REG_DEVID_AD            0x00
 
-#define ADXL362_REG_POWER_CTL  0x2D
-#define ADXL362_MEASURE_MODE   0x02
+#define ADXL362_REG_POWER_CTL           0x2D
+#define ADXL362_MEASURE_MODE            0x02
 
-#define ADXL362_REG_XDATA_L   0x0E
-#define ADXL362_REG_YDATA_L   0x10
-#define ADXL362_REG_ZDATA_L   0x12
+#define ADXL362_REG_STATUS              0x0B
+#define ADXL362_REG_XDATA_L             0x0E
+#define ADXL362_REG_YDATA_L             0x10
+#define ADXL362_REG_ZDATA_L             0x12
+
+#define ADXL362_REG_INTMAP1             0x2A
+
 
 #define GRAVITY_M_S2 9.80665f
 
@@ -41,6 +45,11 @@ static const nrfx_spim_t spim = SPIM_INST;
 // Global variable to track button press
 static volatile bool button_pressed = false;
 
+
+#define GPIOTE_INST	0
+#define GPIOTE_NODE	DT_NODELABEL(_CONCAT(gpiote, GPIOTE_INST))
+
+K_SEM_DEFINE(collect_sem, 0, 1);
 
 int adxl362_read_reg(uint8_t reg, uint8_t *value)
 {
@@ -137,7 +146,7 @@ static void button_handler(nrfx_gpiote_pin_t pin,
                           nrfx_gpiote_trigger_t trigger,
                           void *context)
 {
-    button_pressed = true;
+    k_sem_give (&collect_sem);
     LOG_INF("Button SW0 pressed - triggering accel read");
 }
 
@@ -147,12 +156,12 @@ void read_accelerometer_data(void)
     int ret;
     uint8_t axl, axh, ayl, ayh, azl, azh;
 
-    uint8_t tx_buf[8] = {
+    uint8_t tx_buf[10] = {
         ADXL362_CMD_READ_REG,
         ADXL362_REG_XDATA_L, // First register address
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // Dummy
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 // Dummy
     };
-    uint8_t rx_buf[8] = {0};
+    uint8_t rx_buf[10] = {0};
 
     LOG_HEXDUMP_DBG(tx_buf, sizeof(tx_buf), "TX Buffer");
 
@@ -201,7 +210,10 @@ int button_init(void)
 {
     nrfx_err_t err;
     uint8_t in_channel;
-    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
+    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(GPIOTE_INST);
+
+    IRQ_CONNECT(DT_IRQN(GPIOTE_NODE), DT_IRQ(GPIOTE_NODE, priority), nrfx_isr,
+		    NRFX_CONCAT(nrfx_gpiote_, GPIOTE_INST, _irq_handler), 0);
 
     // Initialize GPIOTE if not already done
     #if !defined(CONFIG_GPIO)
@@ -227,6 +239,7 @@ int button_init(void)
     };
     static const nrfx_gpiote_handler_config_t handler_config = {
         .handler = button_handler,
+        .p_context = NULL,
     };
     nrfx_gpiote_input_pin_config_t input_config = {
         .p_pull_config    = &pull_config,
@@ -252,7 +265,7 @@ int led_init(void)
 {
 	nrfx_err_t err;
     uint8_t out_channel;
-    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
+    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(GPIOTE_INST);
 
 	/* Allocate a channel for the output pin */
 	err = nrfx_gpiote_channel_alloc(&gpiote, &out_channel);
@@ -288,7 +301,7 @@ int configure_dppi(void)
 {
 	nrfx_err_t err;
 	uint8_t ppi_channel;
-    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(0);
+    static const nrfx_gpiote_t gpiote = NRFX_GPIOTE_INSTANCE(GPIOTE_INST);
 
 	/* Allocate a DPPI channel */
 	err = nrfx_gppi_channel_alloc(&ppi_channel);
@@ -329,6 +342,19 @@ int main(void)
         LOG_ERR("Failed to read from ADXL362 (err %d)", ret);
     }
 
+    uint8_t power_ctl;
+    adxl362_read_reg(ADXL362_REG_POWER_CTL, &power_ctl);
+    LOG_INF("POWER_CTL = 0x%02X", power_ctl);
+
+    uint8_t status;
+    adxl362_read_reg(ADXL362_REG_STATUS, &status);
+    LOG_INF("STATUS = 0x%02X", status);
+
+    ret = adxl362_write_reg(ADXL362_REG_INTMAP1, 1);
+    if (ret != NRFX_SUCCESS) {
+        LOG_ERR("Failed to set INTMAP");
+    }
+
     ret = adxl362_write_reg(ADXL362_REG_POWER_CTL, ADXL362_MEASURE_MODE);
     if (ret == NRFX_SUCCESS) {
         LOG_INF("Measurement mode enabled");
@@ -336,10 +362,6 @@ int main(void)
     } else {
         LOG_ERR("Failed to set measurement mode");
     }
-
-    uint8_t power_ctl;
-    adxl362_read_reg(ADXL362_REG_POWER_CTL, &power_ctl);
-    LOG_INF("POWER_CTL = 0x%02X", power_ctl);
 
     // Initialize button
     ret = button_init();
@@ -362,13 +384,11 @@ int main(void)
 
     LOG_INF("System ready. Press SW0 button to read accelerometer data");
 
+    k_sem_give (&collect_sem);
+
     while (1) {
-        if (button_pressed) {
-            button_pressed = false; // Reset flag
-            read_accelerometer_data();
-        }
-        
-        k_msleep(10); // Small delay to prevent busy waiting
+        k_sem_take (&collect_sem, K_FOREVER);
+        read_accelerometer_data();
     }
 
 	return 0;
