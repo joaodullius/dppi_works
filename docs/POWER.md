@@ -115,6 +115,58 @@ corrente de SPIM nem de domínio; o modelo usa o que existe:
 
 ¹ Limite superior, pelo TIMER00; a medir com PPK2.
 
+### Consumo × taxa de amostras (mesmo modelo, rajada de 11 bytes, INT)
+
+Premissas por linha: base 2,9 µA; domínio mantido pelo GPIOTE IN: PERI
+20 µA (SPIM22 e SPIM00), LP 5 µA (SPIM30, valor assumido, não publicado);
+domínio MCU ligado pela SPIM00 300 µA; SPIM ativa 0,25 mA × 12,3 µs
+(SPIM22/30) ou 0,8 mA × 3,4 µs (SPIM00) por transação; modo QUEUE (N = 64)
+acrescenta o contador TIMER21 em PERI (121 µA, e acorda PERI no caso da
+SPIM30) e CPU de 3,6 µs por amostra a 2,6 mA. Corrente média do SoC em µA.
+
+| Amostras/s | SPIM30 LATEST | SPIM22 LATEST | SPIM00 LATEST | SPIM30 QUEUE | SPIM22 QUEUE | SPIM00 QUEUE |
+|---|---|---|---|---|---|---|
+| 100 | **8** | 23 | 323 | 150 | 145 | 445 |
+| 400 | **9** | 24 | 324 | 154 | 149 | 449 |
+| 1 600 | **13** | 28 | 327 | 169 | 164 | 463 |
+| 6 400 | **28** | 43 | 340 | 229 | 224 | 521 |
+| 16 000 | 57 | 72 | 366 | 348 | 343 | 637 |
+| 32 000 | 106 | 121 | 410 | 547 | 542 | 831 |
+| 64 000 | 205 | 220 | 497 | 946 | 941 | 1 218 |
+
+Como ler:
+
+- **Em taxas baixas a SPIM30 ganha por 3×** (8 µA contra 23 µA a 100/s),
+  porque é a única que deixa PERI dormindo; o valor absoluto depende do
+  custo real do domínio LP, que precisa de PPK2.
+- **Acima de ~16 k/s a diferença SPIM30 × SPIM22 some** (15 µA em 100 a
+  200), porque o barramento passa a dominar e as duas têm a mesma SPIM.
+- **No modo QUEUE a vantagem da SPIM30 desaparece em qualquer taxa**: o
+  contador TIMER21 em PERI custa 121 µA e acorda PERI a cada transação. Se
+  o modo QUEUE for necessário a taxas baixas, vale trocar o contador por
+  um mecanismo do domínio LP ou usar N pequeno com contagem por software.
+- **A SPIM00 custa 0,3 mA a mais em qualquer taxa** pelo domínio MCU
+  ligado; a 64 k/s a diferença relativa cai para 25–30 %.
+
+### Quando a SPIM00 faz sentido
+
+1. **Rajadas maiores que 11 bytes a 64 k/s** (STATUS + XYZ + temperatura,
+   ou FIFO): com 8 MHz o teto é 52,6 k/s para 17 bytes; a 32 MHz cabem até
+   ~45 bytes por transação a 64 k/s.
+2. **Taxas acima de ~80 k/s** com rajada curta, o limite físico das SPIM2x
+   e SPIM30 a 8 MHz.
+3. **Sensor que exige SCK > 8 MHz** ou `CSNDUR` maior sem perder taxa.
+4. **Margem de barramento**: a 64 k/s a SPIM00 ocupa 22 % contra 80 %,
+   o que absorve jitter do ODR do sensor e deixa o barramento livre para um
+   segundo dispositivo.
+5. **Domínio MCU já ligado por outro motivo** (CPU ativa o tempo todo,
+   flash externa na SPIM00, constant latency): aí o custo de 0,3 mA já
+   está pago e a SPIM00 vira a mais barata por transação.
+
+Contra: pinos dedicados do P2 com drive E0/E1, errata 8 sempre ativa
+(CPHA = 1 ou primeiro bit 0), disparo em PERI atravessando o PPIB e, em
+QUEUE, a mesma exigência de RRAM em standby ou FLPR das outras.
+
 Leituras:
 
 - **Todos atendem 64 k/s com 11 bytes**, mas SPIM22 e SPIM30 sem margem
