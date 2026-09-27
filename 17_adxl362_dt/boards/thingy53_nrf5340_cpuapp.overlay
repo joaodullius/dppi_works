@@ -1,5 +1,0 @@
-/ {
-    aliases {
-        adxl362-spi = &adxl362;
-    };
-};

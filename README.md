@@ -14,7 +14,6 @@ e FLPR.
 | [`timer_dppi_spim/`](timer_dppi_spim/README.md) | Exemplo opcional. Um TIMER dispara a SPIM em taxa fixa. Inclui a bancada: varredura de período, teto do barramento e margem timer × ODR. |
 | [`docs/`](docs) | Diagramas de blocos e de timing (`gen_diagrams.py` gera os SVG, sem dependências) e [análise de consumo](docs/POWER.md). |
 | [`tools/`](tools) | Scripts de gravação e captura de log por RTT usados nos testes. |
-| `adxl382_spim/`, `17_adxl362_dt/`, `gpiote_dppi_gpiote/`, `timer_gppi_gpiote/` | Experimentos anteriores (NCS v2.7.0, tag `ncs-v2.7.0`). |
 
 Os dois exemplos compartilham o mesmo engine (`src/spim_dppi.c`), os mesmos
 backends de sensor e os mesmos overlays. Cada um traz só o seu disparo. O
