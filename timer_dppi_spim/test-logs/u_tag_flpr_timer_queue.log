@@ -1,0 +1,39 @@
+*** Booting nRF Connect SDK v3.4.1-b20f8619ba9a ***
+*** Using Zephyr OS v4.4.2-33fa6a7aac6a ***
+[00:00:00.007,757] [0m<inf> app: dppi_spim: BMI270, trigger=timer, consume=queue N=16[0m
+[00:00:00.007,922] [0m<inf> spim_dppi: SPIM @0x500c8000, hardware CSN on pin 39, 8000000 Hz, CSNDUR 2, RXDELAY 1[0m
+[00:00:00.010,791] [0m<inf> bmi270: BMI270 CHIP_ID 0x24[0m
+[00:00:00.040,918] [0m<inf> bmi270: config upload: 328 bytes in 11 chunks, 23 ms; INIT_ADDR readback 0x0A00[0m
+[00:00:00.042,183] [0m<inf> bmi270: config file loaded (328 bytes)[0m
+[00:00:00.095,474] [0m<inf> bmi270: ACC_CONF 0xAA (+/-2 g, ODR 400 Hz)[0m
+[00:00:00.095,648] [0m<inf> bmi270: PWR_CTRL 0x04 (accel on)[0m
+[00:00:00.095,779] [0m<inf> app: BMI270 ODR 400.0 Hz[0m
+[00:00:00.095,927] [0m<inf> spim_dppi: trigger: TIMER @0x500ca000 every 100 us[0m
+[00:00:00.096,130] [0m<inf> spim_dppi: DPPI connected, queue consumption, burst 17 bytes[0m
+[00:00:01.095,715] [0m<inf> app: t=1088 ms xfers=10016 queued=10001 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:02.096,845] [0m<inf> app: t=2089 ms xfers=20048 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.18 m/s^2[0m
+[00:00:03.096,296] [0m<inf> app: t=3088 ms xfers=30064 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.19 m/s^2[0m
+[00:00:04.095,838] [0m<inf> app: t=4088 ms xfers=40080 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.19 m/s^2[0m
+[00:00:05.096,997] [0m<inf> app: t=5089 ms xfers=50112 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.18 m/s^2[0m
+[00:00:06.096,173] [0m<inf> app: t=6088 ms xfers=60128 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:07.097,028] [0m<inf> app: t=7089 ms xfers=70160 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:08.096,387] [0m<inf> app: t=8088 ms xfers=80176 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.29 max=-0.19 m/s^2[0m
+[00:00:09.095,838] [0m<inf> app: t=9088 ms xfers=90192 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.27 max=-0.19 m/s^2[0m
+[00:00:10.096,752] [0m<inf> app: t=10089 ms xfers=100224 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.17 m/s^2[0m
+[00:00:11.096,325] [0m<inf> app: t=11088 ms xfers=110240 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.29 max=-0.19 m/s^2[0m
+[00:00:12.095,806] [0m<inf> app: t=12088 ms xfers=120256 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.29 max=-0.18 m/s^2[0m
+[00:00:13.097,120] [0m<inf> app: t=13089 ms xfers=130288 queued=10032 fresh=403 dropped=0 Z avg=-0.23 min=-0.28 max=-0.17 m/s^2[0m
+[00:00:14.096,936] [0m<inf> app: t=14089 ms xfers=140304 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:15.096,600] [0m<inf> app: t=15088 ms xfers=150320 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:16.096,173] [0m<inf> app: t=16088 ms xfers=160336 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.29 max=-0.17 m/s^2[0m
+[00:00:17.095,624] [0m<inf> app: t=17088 ms xfers=170352 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.29 max=-0.19 m/s^2[0m
+[00:00:18.096,570] [0m<inf> app: t=18088 ms xfers=180384 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:19.095,868] [0m<inf> app: t=19088 ms xfers=190400 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.18 m/s^2[0m
+[00:00:20.096,845] [0m<inf> app: t=20089 ms xfers=200432 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.19 m/s^2[0m
+[00:00:21.096,265] [0m<inf> app: t=21088 ms xfers=210448 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.28 max=-0.17 m/s^2[0m
+[00:00:22.095,868] [0m<inf> app: t=22088 ms xfers=220464 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.19 m/s^2[0m
+[00:00:23.097,058] [0m<inf> app: t=23089 ms xfers=230496 queued=10032 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.18 m/s^2[0m
+[00:00:24.096,631] [0m<inf> app: t=24089 ms xfers=240512 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.27 max=-0.18 m/s^2[0m
+[00:00:25.096,173] [0m<inf> app: t=25088 ms xfers=250528 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.18 m/s^2[0m
+[00:00:26.095,959] [0m<inf> app: t=26088 ms xfers=260544 queued=10016 fresh=402 dropped=0 Z avg=-0.23 min=-0.28 max=-0.18 m/s^2[0m
+[00:00:27.095,746] [0m<inf> app: t=27088 ms xfers=270560 queued=10016 fresh=401 dropped=0 Z avg=-0.23 min=-0.27 max=-0.18 m/s^2[0m

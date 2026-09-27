@@ -1,0 +1,45 @@
+*** Booting nRF Connect SDK v3.4.1-b20f8619ba9a ***
+*** Using Zephyr OS v4.4.2-33fa6a7aac6a ***
+[00:00:00.007,754] [0m<inf> app: dppi_spim: BMI270, trigger=sensor-int, consume=latest[0m
+[00:00:00.007,919] [0m<inf> spim_dppi: SPIM @0x500c8000, hardware CSN on pin 39, 8000000 Hz, CSNDUR 2, RXDELAY 1[0m
+[00:00:00.010,789] [0m<inf> bmi270: BMI270 CHIP_ID 0x24[0m
+[00:00:00.040,921] [0m<inf> bmi270: config upload: 328 bytes in 11 chunks, 23 ms; INIT_ADDR readback 0x0A00[0m
+[00:00:00.042,183] [0m<inf> bmi270: config file loaded (328 bytes)[0m
+[00:00:00.095,474] [0m<inf> bmi270: ACC_CONF 0xAA (+/-2 g, ODR 400 Hz)[0m
+[00:00:00.095,647] [0m<inf> bmi270: PWR_CTRL 0x04 (accel on)[0m
+[00:00:00.098,870] [0m<inf> bmi270: INT1: data-ready, push-pull active high, non-latched; STATUS 0x90[0m
+[00:00:00.099,060] [0m<inf> app: BMI270 ODR 400.0 Hz[0m
+[00:00:00.099,205] [0m<inf> spim_dppi: trigger: BMI270 data-ready on pin 36, rising edge -> GPIOTE IN event[0m
+[00:00:00.099,426] [0m<inf> spim_dppi: DPPI connected, latest consumption, burst 17 bytes[0m
+[00:00:01.099,659] [0m<inf> app: t=1000 ms xfers=403 latest X=-0.77 Y=9.57 Z=-0.21 m/s^2 (fresh)[0m
+[00:00:02.100,144] [0m<inf> app: t=2000 ms xfers=805 latest X=-0.77 Y=9.61 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:03.100,633] [0m<inf> app: t=3000 ms xfers=1206 latest X=-0.77 Y=9.59 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:04.101,151] [0m<inf> app: t=4000 ms xfers=1608 latest X=-0.78 Y=9.58 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:05.101,670] [0m<inf> app: t=5000 ms xfers=2010 latest X=-0.79 Y=9.57 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:06.102,189] [0m<inf> app: t=6000 ms xfers=2412 latest X=-0.75 Y=9.58 Z=-0.27 m/s^2 (fresh)[0m
+[00:00:07.102,677] [0m<inf> app: t=7000 ms xfers=2814 latest X=-0.75 Y=9.59 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:08.103,165] [0m<inf> app: t=8000 ms xfers=3216 latest X=-0.75 Y=9.58 Z=-0.25 m/s^2 (fresh)[0m
+[00:00:09.103,684] [0m<inf> app: t=9000 ms xfers=3618 latest X=-0.75 Y=9.58 Z=-0.22 m/s^2 (fresh)[0m
+[00:00:10.104,203] [0m<inf> app: t=10000 ms xfers=4020 latest X=-0.74 Y=9.60 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:11.104,722] [0m<inf> app: t=11000 ms xfers=4422 latest X=-0.79 Y=9.57 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:12.105,241] [0m<inf> app: t=12000 ms xfers=4824 latest X=-0.75 Y=9.59 Z=-0.25 m/s^2 (fresh)[0m
+[00:00:13.105,759] [0m<inf> app: t=13000 ms xfers=5226 latest X=-0.75 Y=9.59 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:14.106,278] [0m<inf> app: t=14000 ms xfers=5628 latest X=-0.77 Y=9.57 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:15.106,797] [0m<inf> app: t=15000 ms xfers=6030 latest X=-0.77 Y=9.59 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:16.107,316] [0m<inf> app: t=16000 ms xfers=6432 latest X=-0.76 Y=9.58 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:17.107,835] [0m<inf> app: t=17000 ms xfers=6834 latest X=-0.79 Y=9.60 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:18.108,354] [0m<inf> app: t=18000 ms xfers=7236 latest X=-0.76 Y=9.59 Z=-0.21 m/s^2 (fresh)[0m
+[00:00:19.108,872] [0m<inf> app: t=19000 ms xfers=7638 latest X=-0.77 Y=9.59 Z=-0.21 m/s^2 (fresh)[0m
+[00:00:20.109,391] [0m<inf> app: t=20000 ms xfers=8040 latest X=-0.75 Y=9.58 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:21.109,910] [0m<inf> app: t=21000 ms xfers=8442 latest X=-0.78 Y=9.59 Z=-0.25 m/s^2 (fresh)[0m
+[00:00:22.110,429] [0m<inf> app: t=22000 ms xfers=8844 latest X=-0.76 Y=9.57 Z=-0.22 m/s^2 (fresh)[0m
+[00:00:23.110,948] [0m<inf> app: t=23000 ms xfers=9246 latest X=-0.78 Y=9.58 Z=-0.24 m/s^2 (fresh)[0m
+[00:00:24.111,466] [0m<inf> app: t=24000 ms xfers=9648 latest X=-0.75 Y=9.59 Z=-0.22 m/s^2 (fresh)[0m
+[00:00:25.111,985] [0m<inf> app: t=25000 ms xfers=10050 latest X=-0.78 Y=9.60 Z=-0.25 m/s^2 (fresh)[0m
+[00:00:26.112,504] [0m<inf> app: t=26000 ms xfers=10452 latest X=-0.75 Y=9.59 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:27.113,023] [0m<inf> app: t=27000 ms xfers=10854 latest X=-0.75 Y=9.59 Z=-0.22 m/s^2 (fresh)[0m
+[00:00:28.113,541] [0m<inf> app: t=28000 ms xfers=11256 latest X=-0.77 Y=9.59 Z=-0.25 m/s^2 (fresh)[0m
+[00:00:29.114,060] [0m<inf> app: t=29000 ms xfers=11658 latest X=-0.77 Y=9.57 Z=-0.22 m/s^2 (fresh)[0m
+[00:00:30.114,579] [0m<inf> app: t=30000 ms xfers=12060 latest X=-0.74 Y=9.60 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:31.115,098] [0m<inf> app: t=31000 ms xfers=12462 latest X=-0.78 Y=9.57 Z=-0.23 m/s^2 (fresh)[0m
+[00:00:32.115,617] [0m<inf> app: t=32000 ms xfers=12864 latest X=-0.74 Y=9.58 Z=-0.23 m/s^2 (fresh)[0m

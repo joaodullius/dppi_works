@@ -1,0 +1,92 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+DT_COMPAT_BOSCH_BMI270 := bosch,bmi270
+
+menu "Sensor data-ready -> GPIOTE -> DPPI -> SPIM accelerometer reader"
+
+choice APP_SENSOR
+	prompt "Accelerometer on the SPI bus (chosen app,accel)"
+	default APP_SENSOR_BMI270 if $(dt_compat_enabled,$(DT_COMPAT_BOSCH_BMI270))
+	default APP_SENSOR_ADXL362
+
+config APP_SENSOR_ADXL362
+	bool "ADXL362 (Thingy:53)"
+
+config APP_SENSOR_BMI270
+	bool "BMI270 (nRF54L15 TAG)"
+
+endchoice
+
+config APP_SENSOR_ODR_HZ
+	int "Sensor output data rate in Hz"
+	default 400
+	help
+	  Rounded down to the nearest rate the sensor supports
+	  (ADXL362: 12.5..400 Hz, BMI270: 25..1600 Hz). The data-ready pin
+	  fires once per sample, so this is also the SPI transaction rate.
+
+choice APP_CONSUME
+	prompt "How the CPU consumes the samples"
+	default APP_CONSUME_LATEST
+
+config APP_CONSUME_LATEST
+	bool "Latest value only (single buffer, no interrupts)"
+	help
+	  EasyDMA rewrites the same buffer on every transaction. The CPU reads
+	  it periodically and sees the most recent sample; intermediate
+	  samples are overwritten. Cheapest option, for state not streams.
+
+config APP_CONSUME_QUEUE
+	bool "Every sample through a message queue (EasyDMA array list)"
+	help
+	  EasyDMA array list mode fills a ping-pong buffer of 2 x
+	  APP_BLOCK_SAMPLES slots; a hardware counter of SPIM END events raises
+	  one interrupt per block, whose ISR pushes the samples one by one into
+	  a k_msgq. The consumer thread pulls them one at a time, in order.
+
+endchoice
+
+config APP_BLOCK_SAMPLES
+	int "Samples per block (interrupt every N samples)"
+	depends on APP_CONSUME_QUEUE
+	default 16
+	range 1 512
+	help
+	  N = 1 gives one interrupt per sample (lowest latency, highest CPU
+	  cost); larger N amortizes the interrupt over a block.
+
+config APP_QUEUE_DEPTH
+	int "Message queue depth in samples"
+	depends on APP_CONSUME_QUEUE
+	default 64
+	help
+	  Must hold at least two blocks plus the worst-case consumer delay.
+
+config APP_SPI_FREQ_HZ
+	int "SPIM clock frequency in Hz"
+	default 4000000
+
+config APP_SPI_CSN_DURATION
+	int "IFTIMING.CSNDUR: CSN-to-SCK delay and CSN inactive time, in SPIM core clock cycles"
+	default 2
+	range 1 255
+	help
+	  Reset value 2. nrfx raises it automatically only when it applies the
+	  nRF54L errata 8 workaround (PRESCALER > 2); at higher SPI clocks it
+	  may need a larger value so SCK is settled before the first edge.
+
+config APP_SPI_RX_DELAY
+	int "IFTIMING.RXDELAY: MISO sample delay (-1 = driver default)"
+	default -1
+	range -1 7
+	help
+	  Only on SPIM instances that have RXDELAY (nRF5340 SPIM4, nRF54L SPIMxx).
+
+config APP_REPORT_PERIOD_MS
+	int "Report period in milliseconds"
+	default 1000
+
+endmenu
+
+source "Kconfig.zephyr"

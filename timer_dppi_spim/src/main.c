@@ -1,13 +1,17 @@
 /*
- * gpiote_dppi_spim - accelerometer read started by its data-ready pin,
+ * timer_dppi_spim - accelerometer read at a fixed rate set by a TIMER,
  * nRF Connect SDK v3.4.1
  *
- *   sensor INT pin --GPIOTE IN event--DPPI--> SPIM START
+ *   TIMER COMPARE0 --DPPI--> SPIM START
  *   SPIM (hardware CSN, EasyDMA) --END--DPPI--> TIMER counter
  *
  * The board overlay selects sensor, bus, pins and timers (see app_dt.h);
- * Kconfig selects the consumption mode. This file only reports.
+ * Kconfig selects period and consumption mode. This file only reports and,
+ * when APP_SWEEP_PERIODS_US is set, sweeps the period (bench).
  */
+#include <stdlib.h>
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -84,12 +88,61 @@ static void run_window(uint32_t *elapsed_ms)
 		win.zsum += s.z;
 	}
 	*elapsed_ms += CONFIG_APP_REPORT_PERIOD_MS;
-	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u dropped=%u late=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
-		*elapsed_ms, spim_dppi_total_xfers(), win.n, win.fresh,
+	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u skipped=%u dropped=%u late=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
+		*elapsed_ms, spim_dppi_total_xfers(), win.n, win.fresh, spim_dppi_skipped(),
 		spim_dppi_dropped(), spim_dppi_late_wraps(),
 		win.n ? (double)to_ms2(win.zsum / (int32_t)win.n) : 0.0,
 		win.n ? (double)to_ms2(win.zmin) : 0.0, win.n ? (double)to_ms2(win.zmax) : 0.0);
 	stats_reset(&win);
+}
+#endif
+
+#if defined(CONFIG_APP_CONSUME_QUEUE)
+/*
+ * Sweep: run each period for APP_SWEEP_STEP_S seconds and print the totals
+ * of the step (first second discarded as settling). Fresh per second vs the
+ * sensor's real ODR shows whether the timer rate loses samples.
+ */
+static void run_sweep(const char *list)
+{
+	char buf[128];
+	uint32_t elapsed_ms = 0;
+
+	strncpy(buf, list, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = '\0';
+
+	for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+		uint32_t period = strtoul(tok, NULL, 10);
+
+		if (period == 0) {
+			continue;
+		}
+		spim_dppi_set_period_us(period);
+		LOG_INF("=== sweep: period %u us (%u.%u Hz) for %d s", period,
+			1000000 / period, (10000000 / period) % 10, CONFIG_APP_SWEEP_STEP_S);
+		run_window(&elapsed_ms);   /* settling second, not counted */
+
+		uint32_t x0 = spim_dppi_total_xfers(), q = 0, f = 0;
+		uint32_t s0 = spim_dppi_skipped(), d0 = spim_dppi_dropped(), l0 = spim_dppi_late_wraps();
+		uint8_t raw[SENSOR_BURST_LEN];
+		struct sensor_sample s;
+		int64_t end = k_uptime_get() + (CONFIG_APP_SWEEP_STEP_S - 1) * 1000;
+
+		while (k_uptime_get() < end) {
+			if (k_msgq_get(&sample_q, raw, K_MSEC(5)) == 0) {
+				sensor->decode(raw, &s);
+				q++;
+				f += s.fresh;
+			}
+		}
+		uint32_t secs = CONFIG_APP_SWEEP_STEP_S - 1;
+
+		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u",
+			period, (spim_dppi_total_xfers() - x0) / secs, q / secs, f / secs,
+			(f * 10 / secs) % 10, spim_dppi_skipped() - s0, spim_dppi_dropped() - d0,
+			spim_dppi_late_wraps() - l0);
+	}
+	LOG_INF("=== sweep done");
 }
 #endif
 
@@ -98,9 +151,11 @@ int main(void)
 	int err;
 	uint32_t elapsed_ms = 0;
 
-	LOG_INF("gpiote_dppi_spim: %s, trigger=data-ready pin, consume=%s%s", sensor->name,
+	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, consume=%s%s%s", sensor->name,
+		CONFIG_APP_SAMPLE_PERIOD_US,
 		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? "queue N=" : "latest",
-		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? STRINGIFY(CONFIG_APP_BLOCK_SAMPLES) : "");
+		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? STRINGIFY(CONFIG_APP_BLOCK_SAMPLES) : "",
+		IS_ENABLED(CONFIG_APP_QUEUE_FRESH_ONLY) ? " fresh-only" : "");
 
 	err = spim_dppi_init();
 	if (err) {
@@ -117,6 +172,11 @@ int main(void)
 
 #if defined(CONFIG_APP_CONSUME_QUEUE)
 	stats_reset(&win);
+#endif
+#if defined(CONFIG_APP_CONSUME_QUEUE)
+	if (CONFIG_APP_SWEEP_PERIODS_US[0] != '\0') {
+		run_sweep(CONFIG_APP_SWEEP_PERIODS_US);
+	}
 #endif
 	while (1) {
 		run_window(&elapsed_ms);

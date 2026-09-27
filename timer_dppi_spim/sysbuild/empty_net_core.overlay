@@ -1,0 +1,6 @@
+/*
+ * Same net core partition layout as sysbuild/b0n.overlay. The empty net core
+ * image is linked into s0_partition by nrf/sysbuild/overlays/s0-partition.overlay,
+ * which sysbuild adds on top of this file.
+ */
+#include <samples/matter/nrf5340_cpunet_partitions.dtsi>

@@ -1,0 +1,94 @@
+[00:00:48.178,783] [0m<inf> app: t=48000 ms xfers=77296 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.05 m/s^2[0m
+[00:00:49.179,221] [0m<inf> app: t=49000 ms xfers=78904 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:50.184,470] [0m<inf> app: t=50000 ms xfers=80520 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.06 m/s^2[0m
+[00:00:51.184,672] [0m<inf> app: t=51000 ms xfers=82128 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.05 m/s^2[0m
+[00:00:52.185,142] [0m<inf> app: t=52000 ms xfers=83736 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.30 max=-0.06 m/s^2[0m
+[00:00:53.190,421] [0m<inf> app: t=53000 ms xfers=85352 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.27 max=-0.08 m/s^2[0m
+[00:00:54.190,630] [0m<inf> app: t=54000 ms xfers=86960 queued=1609 fresh=1609 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.04 m/s^2[0m
+[00:00:55.191,032] [0m<inf> app: t=55000 ms xfers=88568 queued=1607 fresh=1607 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.29 max=-0.07 m/s^2[0m
+[00:00:56.191,142] [0m<inf> app: t=56000 ms xfers=90176 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.05 m/s^2[0m
+[00:00:57.196,361] [0m<inf> app: t=57000 ms xfers=91792 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.05 m/s^2[0m
+[00:00:58.196,800] [0m<inf> app: t=58000 ms xfers=93400 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.31 max=-0.07 m/s^2[0m
+[00:00:59.196,941] [0m<inf> app: t=59000 ms xfers=95008 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.31 max=-0.06 m/s^2[0m
+[00:01:00.197,349] [0m<inf> app: t=60000 ms xfers=96616 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.27 max=-0.05 m/s^2[0m
+[00:01:01.202,568] [0m<inf> app: t=61000 ms xfers=98232 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:02.202,709] [0m<inf> app: t=62000 ms xfers=99840 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.01 m/s^2[0m
+[00:01:03.203,239] [0m<inf> app: t=63000 ms xfers=101448 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.04 m/s^2[0m
+[00:01:04.208,488] [0m<inf> app: t=64000 ms xfers=103064 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:01:05.208,659] [0m<inf> app: t=65000 ms xfers=104672 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.06 m/s^2[0m
+[00:01:06.209,159] [0m<inf> app: t=66000 ms xfers=106280 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.05 m/s^2[0m
+[00:01:07.214,500] [0m<inf> app: t=67000 ms xfers=107896 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:01:08.214,641] [0m<inf> app: t=68000 ms xfers=109504 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:01:09.215,110] [0m<inf> app: t=69000 ms xfers=111112 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:10.220,420] [0m<inf> app: t=70000 ms xfers=112728 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.29 max=-0.09 m/s^2[0m
+[00:01:11.225,700] [0m<inf> app: t=71000 ms xfers=114344 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:01:12.225,841] [0m<inf> app: t=72000 ms xfers=115952 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:13.226,249] [0m<inf> app: t=73000 ms xfers=117560 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.27 max=-0.06 m/s^2[0m
+[00:01:14.231,498] [0m<inf> app: t=74000 ms xfers=119176 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.31 max=-0.07 m/s^2[0m
+[00:01:15.231,669] [0m<inf> app: t=75000 ms xfers=120784 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.27 max=-0.06 m/s^2[0m
+[00:01:16.232,139] [0m<inf> app: t=76000 ms xfers=122392 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:01:17.237,418] [0m<inf> app: t=77000 ms xfers=124008 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.06 m/s^2[0m
+[00:01:18.242,698] [0m<inf> app: t=78000 ms xfers=125624 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.27 max=-0.07 m/s^2[0m
+[00:01:19.242,839] [0m<inf> app: t=79000 ms xfers=127232 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.30 max=-0.06 m/s^2[0m
+[00:01:20.243,309] [0m<inf> app: t=80000 ms xfers=128840 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:21.248,527] [0m<inf> app: t=81000 ms xfers=130456 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.04 m/s^2[0m
+[00:01:22.248,648] [0m<inf> app: t=82000 ms xfers=132064 queued=1610 fresh=1610 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:01:23.249,015] [0m<inf> app: t=83000 ms xfers=133672 queued=1606 fresh=1606 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:24.249,003] [0m<inf> app: t=84000 ms xfers=135280 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.27 max=-0.08 m/s^2[0m
+[00:01:25.249,351] [0m<inf> app: t=85000 ms xfers=136888 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:01:26.254,539] [0m<inf> app: t=86000 ms xfers=138504 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.33 max=-0.07 m/s^2[0m
+[00:01:27.259,696] [0m<inf> app: t=87000 ms xfers=140120 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.05 m/s^2[0m
+[00:01:28.259,837] [0m<inf> app: t=88000 ms xfers=141728 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.07 m/s^2[0m
+[00:01:29.260,246] [0m<inf> app: t=89000 ms xfers=143336 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.27 max=-0.03 m/s^2[0m
+[00:01:30.265,434] [0m<inf> app: t=90000 ms xfers=144952 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.17 min=-0.29 max=-0.08 m/s^2[0m
+[00:01:31.270,622] [0m<inf> app: t=91000 ms xfers=146568 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:01:32.270,732] [0m<inf> app: t=92000 ms xfers=148176 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:01:33.271,140] [0m<inf> app: t=93000 ms xfers=149784 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:01:34.276,298] [0m<inf> app: t=94000 ms xfers=151400 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:35.281,455] [0m<inf> app: t=95000 ms xfers=153016 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.31 max=-0.06 m/s^2[0m
+[00:01:36.286,613] [0m<inf> app: t=96000 ms xfers=154632 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:01:37.286,662] [0m<inf> app: t=97000 ms xfers=156240 queued=1601 fresh=1601 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.31 max=-0.08 m/s^2[0m
+[00:01:38.287,101] [0m<inf> app: t=98000 ms xfers=157848 queued=1615 fresh=1615 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.06 m/s^2[0m
+[00:01:39.292,350] [0m<inf> app: t=99000 ms xfers=159464 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.07 m/s^2[0m
+[00:01:40.297,569] [0m<inf> app: t=100000 ms xfers=161080 queued=1616 fresh=1616 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.05 m/s^2[0m
+[00:01:41.297,641] [0m<inf> app: t=101000 ms xfers=162688 queued=1606 fresh=1606 skipped=0 dropped=0 late=0 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:01:42.297,965] [0m<inf> app: t=102000 ms xfer*** Booting nRF Connect SDK v3.4.1-b20f8619ba9a ***
+*** Using Zephyr OS v4.4.2-33fa6a7aac6a ***
+[00:00:00.007,785] [0m<inf> app: gpiote_dppi_spim: BMI270, trigger=data-ready pin, consume=queue N=16[0m
+[00:00:00.007,960] [0m<inf> spim_dppi: SPIM @0x500c8000, hardware CSN on pin 39, 8000000 Hz, CSNDUR 2, RXDELAY 1[0m
+[00:00:00.010,820] [0m<inf> bmi270: BMI270 CHIP_ID 0x24[0m
+[00:00:00.040,947] [0m<inf> bmi270: config upload: 328 bytes in 11 chunks, 23 ms; INIT_ADDR readback 0x0A00[0m
+[00:00:00.042,213] [0m<inf> bmi270: config file loaded (328 bytes)[0m
+[00:00:00.095,503] [0m<inf> bmi270: ACC_CONF 0xAC (+/-2 g, ODR 1600 Hz)[0m
+[00:00:00.095,679] [0m<inf> bmi270: PWR_CTRL 0x04 (accel on)[0m
+[00:00:00.098,899] [0m<inf> bmi270: INT1: data-ready, push-pull active high, non-latched; STATUS 0x90[0m
+[00:00:00.099,090] [0m<inf> app: BMI270 ODR 1600.0 Hz[0m
+[00:00:00.099,244] [0m<inf> spim_dppi: trigger: BMI270 data-ready on pin 36, rising edge -> GPIOTE IN event[0m
+[00:00:00.099,457] [0m<inf> spim_dppi: DPPI connected, queue (wrap ISR + EGU) consumption, burst 17 bytes[0m
+[00:00:01.104,226] [0m<inf> app: t=1000 ms xfers=1616 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.17 min=-0.28 max=0.01 m/s^2[0m
+[00:00:02.104,726] [0m<inf> app: t=2000 ms xfers=3224 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.30 max=-0.04 m/s^2[0m
+[00:00:03.104,837] [0m<inf> app: t=3000 ms xfers=4832 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.31 max=-0.08 m/s^2[0m
+[00:00:04.105,367] [0m<inf> app: t=4000 ms xfers=6440 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.27 max=-0.07 m/s^2[0m
+[00:00:05.105,638] [0m<inf> app: t=5000 ms xfers=8048 queued=1616 fresh=1616 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:06.106,069] [0m<inf> app: t=6000 ms xfers=9656 queued=1600 fresh=1600 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:00:07.106,301] [0m<inf> app: t=7000 ms xfers=11264 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.31 max=-0.07 m/s^2[0m
+[00:00:08.106,801] [0m<inf> app: t=8000 ms xfers=12872 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.17 min=-0.30 max=-0.07 m/s^2[0m
+[00:00:09.106,973] [0m<inf> app: t=9000 ms xfers=14480 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:00:10.107,473] [0m<inf> app: t=10000 ms xfers=16088 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:00:11.107,675] [0m<inf> app: t=11000 ms xfers=17696 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.08 m/s^2[0m
+[00:00:12.108,144] [0m<inf> app: t=12000 ms xfers=19304 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:00:13.113,423] [0m<inf> app: t=13000 ms xfers=20920 queued=1616 fresh=1616 dropped=0 late=1 Z avg=-0.17 min=-0.31 max=-0.07 m/s^2[0m
+[00:00:14.118,703] [0m<inf> app: t=14000 ms xfers=22536 queued=1616 fresh=1616 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.05 m/s^2[0m
+[00:00:15.118,753] [0m<inf> app: t=15000 ms xfers=24144 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:00:16.119,161] [0m<inf> app: t=16000 ms xfers=25752 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.08 m/s^2[0m
+[00:00:17.124,471] [0m<inf> app: t=17000 ms xfers=27368 queued=1616 fresh=1616 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m
+[00:00:18.124,647] [0m<inf> app: t=18000 ms xfers=28976 queued=1602 fresh=1602 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:19.125,081] [0m<inf> app: t=19000 ms xfers=30584 queued=1614 fresh=1614 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.07 m/s^2[0m
+[00:00:20.125,223] [0m<inf> app: t=20000 ms xfers=32192 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:21.125,722] [0m<inf> app: t=21000 ms xfers=33800 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:22.125,863] [0m<inf> app: t=22000 ms xfers=35408 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.17 min=-0.31 max=-0.06 m/s^2[0m
+[00:00:23.126,271] [0m<inf> app: t=23000 ms xfers=37016 queued=1615 fresh=1615 dropped=0 late=1 Z avg=-0.17 min=-0.31 max=-0.07 m/s^2[0m
+[00:00:24.131,520] [0m<inf> app: t=24000 ms xfers=38632 queued=1616 fresh=1616 dropped=0 late=1 Z avg=-0.18 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:25.131,621] [0m<inf> app: t=25000 ms xfers=40240 queued=1612 fresh=1612 dropped=0 late=1 Z avg=-0.18 min=-0.32 max=-0.08 m/s^2[0m
+[00:00:26.132,009] [0m<inf> app: t=26000 ms xfers=41848 queued=1604 fresh=1604 dropped=0 late=1 Z avg=-0.17 min=-0.29 max=-0.06 m/s^2[0m
+[00:00:27.132,180] [0m<inf> app: t=27000 ms xfers=43456 queued=1601 fresh=1601 dropped=0 late=1 Z avg=-0.18 min=-0.28 max=-0.07 m/s^2[0m

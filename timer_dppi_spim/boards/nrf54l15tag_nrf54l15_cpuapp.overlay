@@ -1,0 +1,31 @@
+/*
+ * nRF54L15 TAG - BMI270 on spi22 (P1, PERI domain: same DPPI domain as
+ * GPIOTE20 and TIMER2x, no PPIB needed). CSN is added to the board's pinctrl
+ * group so the SPIM hardware chip select drives P1.07.
+ */
+/ {
+	chosen {
+		app,accel = &bmi270;
+		app,timer-trigger = &timer20;
+		app,timer-count = &timer21;
+		app,egu = &egu20;
+	};
+};
+
+&spi22_default {
+	group1 {
+		psels = <NRF_PSEL(SPIM_SCK, 1, 8)>,
+			<NRF_PSEL(SPIM_MOSI, 1, 6)>,
+			<NRF_PSEL(SPIM_MISO, 1, 5)>,
+			<NRF_PSEL(SPIM_CSN, 1, 7)>;
+	};
+};
+
+/* The other sensors share nothing with this test; keep their drivers out */
+&adxl367 {
+	status = "disabled";
+};
+
+&bme688 {
+	status = "disabled";
+};

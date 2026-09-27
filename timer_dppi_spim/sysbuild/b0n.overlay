@@ -1,0 +1,15 @@
+/*
+ * Overlay for the b0n image (SB_CONFIG_SECURE_BOOT_NETCORE, NCS 3.4.x without
+ * Partition Manager). This file replaces netboot's own app.overlay, so it also
+ * keeps its chosen code-partition.
+ *
+ * The Thingy:53 cpunet DTS only defines mcuboot/slot0/slot1, but b0n expects
+ * b0n_partition / s0_partition; reuse the layout the SDK ships for Matter.
+ */
+#include <samples/matter/nrf5340_cpunet_partitions.dtsi>
+
+/ {
+	chosen {
+		zephyr,code-partition = &b0n_partition;
+	};
+};
