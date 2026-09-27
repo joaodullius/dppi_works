@@ -60,6 +60,9 @@ Ferramentas:
 | `APP_SPI_RX_DELAY` | −1 (driver) | `IFTIMING.RXDELAY` (1 na TAG) |
 | `APP_REQUEST_HFXO` | y (se há clock control) | TIMER com período exato |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório no log |
+| `APP_WRAP_LATENCY_STATS` | n | bancada: TIMER de disparo a 16 MHz e captura da latência trigger → ISR de wrap (min/avg/max) |
+| `APP_COUNT_STARTED` | n | bancada: no nRF54L conta `STARTED` em vez de `DMA.RX.READY` |
+| `APP_RRAM_STANDBY` | n | nRF54L: RRAM em standby em idle (`POWER.LOWPOWERCONFIG`) em vez de power-down; wake-up rápido da ISR |
 
 ### Devicetree
 
@@ -67,7 +70,7 @@ Ferramentas:
 |---|---|
 | `app,accel` | nó do acelerômetro; o barramento é o pai do nó e `cs-gpios` dá o pino de CSN |
 | `app,timer-trigger` | TIMER que dispara as transações |
-| `app,timer-count` | TIMER usado como contador de `END` |
+| `app,timer-count` | TIMER usado como contador de transações (`DMA.RX.READY` no nRF54L, `STARTED` no nRF5340) |
 | `app,egu` | EGU que transforma os eventos de bloco em interrupção (modo QUEUE) |
 
 Os overlays são os mesmos do `gpiote_dppi_spim`, mais o `app,timer-trigger`.
@@ -79,9 +82,13 @@ Os arquivos em `bench/` são passados como `EXTRA_CONF_FILE`:
 | Arquivo | Cenário |
 |---|---|
 | `sweep-tag.conf` | margem timer × ODR na TAG: 2500 a 2200 µs, filtro na ISR |
-| `bus-max-tag.conf` | teto do barramento na TAG: 40 a 15 µs, N = 64, fila 512 |
-| `bus-64k-thingy.conf` | teto do barramento na Thingy:53: 25 a 12 µs, N = 64, fila 512 |
+| `bus-max-tag.conf` | teto do barramento na TAG: 40 a 16 µs, N = 64, fila 512, latência do wrap |
+| `bus-64k-thingy.conf` | teto do barramento na Thingy:53: 25 a 10 µs, N = 64, fila 512 |
 | `sweep-flpr.conf` | FLPR com `hfxo_launcher`: 100 a 20 µs |
+| `n1-tag.conf` | uma interrupção por amostra (N = 1): 1000 a 20 µs, latência do wrap; M33 × FLPR |
+| `n1-tag-started.conf` | sobre o anterior: conta `STARTED` em vez de `DMA.RX.READY` |
+| `constlat.conf` | sobre o anterior: M33 em constant latency (`CONFIG_SOC_NRF_FORCE_CONSTLAT`) |
+| `rram-standby.conf` | sobre o anterior: RRAM em standby em idle (`APP_RRAM_STANDBY`) |
 
 ## Compilação e gravação
 
@@ -190,15 +197,37 @@ Thingy:53 M33, ADXL362, 11 bytes a 8 MHz (`bench/bus-64k-thingy.conf`):
 | **14 µs** | **71451** | 0 (duas passagens); dados válidos (Z varia de −11,9 a −4,3 m/s²) |
 | 12 / 11 / 10 µs | 83335 / 90904 / 99991 STARTs | 0, mas **dados inválidos**: Z fixo em −11,10 (a transação de 11 bytes não termina; no nRF5340 o `START` durante a transação reinicia a SPIM) |
 
-`xfers` conta `STARTED`, não transações completas: acima do teto a contagem
+`xfers` conta `STARTED` (`DMA.RX.READY` no nRF54L), não transações completas: acima do teto a contagem
 continua subindo enquanto o EasyDMA nunca entrega uma rajada inteira. O
 teto real é o barramento (11 bytes + `START` + CSN ≈ 12,3 µs → 14 µs é o
 último período com dados válidos, 71,4 k/s). O wrap do anel não limita:
 a ISR escreve o `RXD.PTR` logo após o início da última transação do ciclo
 e tem a transação inteira de margem (ver Achados).
 
-Tag FLPR com `hfxo_launcher` (`bench/sweep-flpr.conf`): 10001 / 24994 /
-39996 / 49989 transações por segundo, `late_wraps` 0, sem zero-latency IRQ.
+Tag FLPR com `hfxo_launcher` (`bench/bus-max-tag.conf`): 25058 / 40097 /
+50117 / 52759 transações por segundo de 40 a 19 µs, `late_wraps` 0, sem
+zero-latency IRQ; a 18, 17 e 16 µs os `DMA.RX.READY` continuam a ser
+contados mas os dados congelam, como no M33.
+
+### M33 × FLPR: latência do wrap e uma interrupção por amostra
+
+`bench/n1-tag.conf`: N = 1, fila 512, `APP_WRAP_LATENCY_STATS`. Cada
+transação custa uma ISR de wrap (a cada 2), uma ISR de EGU, um `k_msgq_put`
+e um `k_msgq_get`. Latência = do `COMPARE` do trigger até a ISR de wrap
+(inclui DPPI → `START` → `DMA.RX.READY` → DPPI → contador → IRQ).
+
+| Configuração | Latência com o core em idle (avg / max) | Latência com o core acordado | N = 1 sem `late_wraps` até |
+|---|---|---|---|
+| M33 padrão | 16,8 / 17,3 µs | 1,7–2,6 µs (≥ 40 k/s) | 50 k/s |
+| M33 contando `STARTED` | 17,3 / 17,8 µs | 2,3–2,7 µs | 50 k/s |
+| M33 + constant latency | 16,8 / 17,1 µs | 1,7 µs | 50 k/s |
+| M33 + RRAM standby | **2,75 / 2,93 µs** | 1,7–2,3 µs | 50 k/s |
+| FLPR | **2,43 / 2,50 µs**, constante | idem | 40 k/s; a 50 k/s 50086 `late_wraps` em 5 s (core saturado; `dropped` 0) |
+
+Logs: `test-logs/u_tag_n1_m33.log`, `u_tag_n1_m33_started.log`,
+`u_tag_n1_m33_constlat.log`, `u_tag_n1_m33_rramstandby.log`,
+`u_tag_n1_flpr.log`, `u_tag_busmax_flpr.log`. Interpretação no
+[README da raiz](../README.md#nrf54l15-cortex-m33--flpr-risc-v).
 
 ## Detalhes de implementação
 
@@ -217,7 +246,18 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
 
 1. **HFXO**: sem o pedido, o TIMER roda do HFINT, cerca de 0,2 % fora. O
    FLPR não tem clock control no NCS 3.4.1, por isso o `hfxo_launcher`.
-2. **O wrap do anel é feito logo após `STARTED`, não após `END`**. O
+2. **Latência de 17 µs do M33 em idle = wake-up da RRAM.** Com o core em
+   idle a RRAM entra em power-down (padrão do `RRAMC`) e a primeira
+   instrução da ISR espera `tIDLE2CPU` = 13 µs; medido 16,8 µs até a ISR de
+   wrap contra 2 µs com o core acordado. Constant latency sozinho não
+   resolve; RRAM em standby (`APP_RRAM_STANDBY`) dá 2,75 µs constantes. O
+   FLPR roda da RAM: 2,43 µs sem configurar nada. Só importa para prazos de
+   ISR abaixo de ~18 µs com o core dormindo entre eventos; nas taxas
+   medidas não houve `late_wraps`.
+2. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
+   (nRF54L), não após `END`**. No nRF54L o `DMA.RX.READY` é o evento que o
+   datasheet define para isso ("EasyDMA armazenou .PTR e .MAXCNT, permitindo
+   escrevê-los para a próxima sequência"); a nrfx o chama de `RXSTARTED`. O
    `RXD.PTR` é double-buffered e o hardware o reescreve a cada `START`; o
    datasheet só garante a escrita pela CPU "imediatamente após STARTED".
    A primeira versão contava `END` e escrevia o ponteiro entre o `END` e o

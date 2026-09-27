@@ -33,6 +33,15 @@ static nrfx_egu_t egu = NRFX_EGU_INSTANCE(DT_REG_ADDR(EGU_NODE));
 /* GPIOTE instance that serves the port of the sensor's data-ready pin */
 static nrfx_gpiote_t *const gpiote = &GPIOTE_NRFX_INST_BY_NODE(INT_GPIOTE_NODE);
 
+/* Event counted per transaction: the one after which .PTR may be rewritten */
+#if NRF_SPIM_HAS_DMA_REG
+#define CNT_EVENT      NRF_SPIM_EVENT_RXSTARTED   /* DMA.RX.READY (nRF54L) */
+#define CNT_EVENT_NAME "DMA.RX.READY"
+#else
+#define CNT_EVENT      NRF_SPIM_EVENT_STARTED
+#define CNT_EVENT_NAME "STARTED"
+#endif
+
 /* ---- Buffers ------------------------------------------------------------ */
 
 #if defined(CONFIG_APP_CONSUME_QUEUE)
@@ -180,14 +189,20 @@ static inline uint32_t spim_rx_ptr_get(void)
 }
 
 /*
- * The counter counts SPIM STARTED events (not END): slot k of a ring cycle
- * is in flight when the count is k+1. The array-list pointer register is
- * double-buffered and the hardware rewrites it (PTR += MAXCNT) at every
- * START, so the only safe moment for the CPU to write it is right after a
- * STARTED event, with the whole transaction (>= 11 us here) as margin. A
- * write made around END, as an END-counted design does, can coincide with
- * the next START and the hardware update: the pointer is then torn and the
- * DMA writes elsewhere (bus/MPU fault seen at 15 us period on the nRF5340).
+ * The counter counts the event that marks the pointer registers as free
+ * (not END): slot k of a ring cycle is in flight when the count is k+1. The
+ * array-list pointer register is double-buffered and the hardware rewrites
+ * it (PTR += MAXCNT) at every START, so the only safe moment for the CPU to
+ * write it is right after that, with the whole transaction (>= 11 us here)
+ * as margin. A write made around END, as an END-counted design does, can
+ * coincide with the next START and the hardware update: the pointer is then
+ * torn and the DMA writes elsewhere (bus/MPU fault at 15 us on the nRF5340).
+ *
+ * nRF54L: DMA.RX.READY ("EasyDMA has buffered the .PTR and .MAXCNT
+ * registers, allowing them to be written to prepare for the next sequence")
+ * is the literal definition of that window; nrfx names it RXSTARTED.
+ * nRF53/52: no such event, STARTED ("can be updated immediately after
+ * having received the STARTED event") is the reference.
  *
  *   COMPARE1 = 2N   START of slot 2N-1  -> wrap: PTR = ring[0] (this ISR,
  *                                          zero-latency), short CLEAR
@@ -423,12 +438,12 @@ int spim_dppi_start(void)
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
 
-	/* trigger event -> SPIM START ; SPIM STARTED -> counter COUNT */
+	/* trigger event -> SPIM START ; SPIM STARTED / DMA.RX.READY -> counter COUNT */
 	err = nrfx_gppi_conn_alloc(eep, nrfx_spim_start_task_address_get(&spim), &h_start);
 	if (err < 0) {
 		return err;
 	}
-	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, NRF_SPIM_EVENT_STARTED),
+	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, CNT_EVENT),
 				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
 				   &h_count);
 	if (err < 0) {
@@ -460,8 +475,9 @@ int spim_dppi_start(void)
 	 * measurement started) so no rising edge would ever come. One software
 	 * START reads and clears it; every next sample raises a fresh edge. */
 	nrf_spim_task_trigger(spim.p_reg, NRF_SPIM_TASK_START);
-	LOG_INF("DPPI connected, %s consumption, burst %u bytes%s",
+	LOG_INF("DPPI connected, %s consumption, burst %u bytes, counting %s%s",
 		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? "queue (wrap ISR + EGU)" : "latest",
-		SENSOR_BURST_LEN, IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
+		SENSOR_BURST_LEN, CNT_EVENT_NAME,
+		IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
 	return 0;
 }

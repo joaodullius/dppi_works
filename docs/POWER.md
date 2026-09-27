@@ -70,6 +70,20 @@ Leituras:
   repetidas forem para a fila: o filtro na ISR vale ~0,4 mA.
 - O FLPR não reduz consumo — acrescenta o bloco VPR — mas cumpre o prazo de
   wrap a 20 µs sem ZLI e libera o M33.
+- **Latência × consumo no M33.** Em low-power idle (2,9 µA) a RRAM fica em
+  power-down e uma ISR que acorda o core leva ~17 µs (`tIDLE2CPU` 13 µs).
+  As duas saídas custam corrente: constant latency = 0,55 mA em idle
+  (`ION_IDLE11`) e, medido, não corrige sozinha; RRAM em standby
+  (`POWER.LOWPOWERCONFIG.MODE = Standby`) corrige (2,75 µs) e o datasheet
+  não publica seu custo — medir com PPK2. Para os casos deste repo a
+  latência não perde dados (o wrap tem a transação inteira de margem e o
+  core não dorme acima de ~40 k/s), então a configuração padrão é a certa;
+  RRAM standby só para prazos < 18 µs com o core dormindo entre eventos.
+- **Domínio da SPIM.** SPIM30 (LP, P0) com GPIOTE30 é o único caminho que
+  deixa PERI desligado entre transações; SPIM2x + GPIOTE20 mantém PERI
+  ligado (Academy: ~+17 µA só pelo GPIOTE IN); SPIM00 (MCU, 32 MHz) exige
+  o domínio MCU ativo e PPIB para o disparo. Nenhuma corrente de SPIM é
+  publicada para o nRF54L15.
 
 ## nRF5340 (Thingy:53, ADXL362, 11 B a 8 MHz)
 

@@ -75,7 +75,8 @@ perde nenhuma.
 No modo LATEST o EasyDMA reescreve sempre o mesmo buffer e a CPU lê uma cópia
 coerente quando precisa. No modo QUEUE o EasyDMA em *array list* enche um
 anel em ping-pong de 2N amostras, com mais N de folga. Um TIMER em modo
-contador conta os `STARTED` da SPIM. No início da última transação do ciclo
+contador conta, por transação, o evento que libera os registradores de
+ponteiro: `DMA.RX.READY` no nRF54L, `STARTED` no nRF5340. No início da última transação do ciclo
 uma ISR zero-latency reposiciona o ponteiro (wrap) com a transação inteira
 de margem, que é a janela segura do datasheet para escrever o `RXD.PTR`; a
 cada bloco completo a EGU, acionada por DPPI, roda a ISR que alimenta a
@@ -99,7 +100,82 @@ O wrap do anel do modo QUEUE não limita: tem a transação inteira de margem.
 |---|---|---|---|
 | Thingy:53 M33 (ADXL362, 11 B) | 1000/s exato | 10000/s, fresh ≈ 380 | **71,4 k/s** (14 µs), `late_wraps` 0 de 25 a 14 µs |
 | Tag M33 (BMI270, 17 B) | 1000/s exato | 10000/s, fresh 402 | **52,6 k/s** (19 µs), `late_wraps` 0; a 18 µs a SPIM para |
-| Tag FLPR (BMI270) | 10001/s (HFXO pedido pelo app core) | — | **50 k/s** (20 µs), `late_wraps` 0 sem ZLI |
+| Tag FLPR (BMI270) | 10001/s (HFXO pedido pelo app core) | — | **52,6 k/s** (19 µs), `late_wraps` 0 sem ZLI |
+
+## nRF54L15: Cortex-M33 × FLPR (RISC-V)
+
+Os dois cores rodam o mesmo código (`nrf54l15tag/nrf54l15/cpuapp` e
+`cpuflpr`). O bench `bench/n1-tag.conf` do `timer_dppi_spim` mede a latência
+do disparo até a ISR de wrap e o teto com uma interrupção por amostra (N = 1).
+
+![M33 × FLPR](docs/m33_vs_flpr_nrf54l15.svg)
+
+| | Cortex-M33 (padrão) | Cortex-M33 + RRAM standby | FLPR (RISC-V) |
+|---|---|---|---|
+| Latência trigger → ISR de wrap, core em idle | 16,8–17,3 µs | 2,75 µs (máx. 2,93) | 2,43 µs (máx. 2,50) |
+| Latência com o core acordado (≥ 40 k/s) | 1,7–2,6 µs | idem | idem |
+| Zero-latency IRQ | sim (`IRQ_DIRECT_CONNECT`) | sim | não existe; ISR direta basta |
+| N = 1 (wrap + EGU + `k_msgq_put` por amostra) sem atraso | 50 k/s | 50 k/s | 40 k/s; a 50 k/s todos os wraps atrasam |
+| Teto do barramento (17 B a 8 MHz, N = 64) | 52,6 k/s, `late_wraps` 0 | idem | 52,6 k/s, `late_wraps` 0 |
+| TIMER exato | pede o HFXO | idem | precisa do `hfxo_launcher` no app core |
+| Código | RRAM (52 KB) | RRAM | RAM (62 KB dos 96 KB do FLPR) |
+| Corrente extra em idle | 2,9 µA (ION_IDLE8) | RRAM standby: não publicado | bloco VPR ligado: ≈ +0,5 mA (DevZone) |
+
+**Os 17 µs do M33 são a RRAM, não o core.** Com o core em idle a RRAM
+entra em power-down (`RRAMC.POWER.LOWPOWERCONFIG.MODE = PowerDown`, o
+padrão) e a primeira instrução da ISR espera o wake-up: o datasheet dá
+`tIDLE2CPU` = 13 µs (9 µs em constant latency). Constant latency sozinho
+(`CONFIG_SOC_NRF_FORCE_CONSTLAT`) não mudou a medição; a RRAM em standby
+(`nrf_rramc_lp_mode_set(NRF_RRAMC, NRF_RRAMC_LP_STANDBY)`, Kconfig
+`APP_RRAM_STANDBY` no exemplo) deixa o M33 em 2,75 µs constantes. O FLPR
+executa da RAM e não tem o problema. `DMA.RX.READY` e `STARTED` dão a mesma
+latência (±0,4 µs).
+
+**Isso perde dados?** Não nas taxas medidas. A aquisição em si não passa
+pela CPU; o único prazo de ISR é o wrap do anel no modo QUEUE, e ele tem a
+transação inteira mais o intervalo até o próximo `START` de margem. Com
+17 µs de latência o wrap só atrasaria com período menor que ~18 µs, ou
+seja, acima de ~55 k transações/s com o core dormindo entre elas. Nessa
+faixa o core já não dorme (a partir de ~40 k/s a latência cai para 2 µs) e
+o barramento da TAG para em 52,6 k/s. Zero `late_wraps` em todos os
+passos. O caso que precisa da RRAM em standby ou do FLPR: rajadas curtas em
+SPIM00 a 32 MHz com período abaixo de 18 µs (ADXL382 a 64 kHz é 15,6 µs) e
+N grande, porque aí o core dorme entre blocos. No modo LATEST não há prazo
+nenhum. Um wrap atrasado desloca as amostras um slot dentro do anel, não
+corrompe memória.
+
+**Quando o FLPR compensa.** Latência determinística sem mexer na RRAM, e
+liberar o M33 para a pilha de rádio. Custa o bloco VPR ligado, ~10 k IRQ/s a
+menos de fôlego que o M33 e o `hfxo_launcher` para timers exatos. Para
+sensores a 400 ou 1600 Hz, os dois cores ficam ociosos e a escolha é de
+arquitetura, não de desempenho.
+
+### Qual SPIM do nRF54L15 usar
+
+| Instância | Domínio | Clock do core | SCK máx. | Pinos | DPPI | Observações |
+|---|---|---|---|---|---|---|
+| SPIM00 | MCU | 128 MHz | 32 MHz (`PRESCALER` 4..126) | P2 (pads de alta velocidade) | DPPIC00, 8 canais | 4× o barramento das SPIM2x: 17 B em 4,25 µs. O disparo (GPIOTE20/TIMER2x, PERI) cruza o PPIB01/PPIB21: latência extra e wake-up se um domínio estiver dormindo. **Errata 8 aplica-se sempre** (`PRESCALER` ≥ 4): com CPHA = 0 e primeiro bit 1 o workaround da nrfx precisa de uma escrita por transação, incompatível com disparo por DPPI; usar CPHA = 1 ou comando com primeiro bit 0. |
+| SPIM20/21/22 | PERI | 16 MHz | 8 MHz (`PRESCALER` 2..126) | P1 (20/21 também P2) | DPPIC20, 16 canais | Mesmo domínio do GPIOTE20 e dos TIMER2x: caminho inteiro sem PPIB. É o que os exemplos usam. |
+| SPIM30 | LP | 16 MHz | 8 MHz | P0 | DPPIC30, 4 canais | Mesmo domínio do GPIOTE30 (P0, 4 canais). Sem TIMER no domínio LP: o contador fica em PERI via PPIB22/PPIB30. |
+
+**Desempenho.** Só a SPIM00 muda o teto: com 8 MHz o limite é 52,6 k/s
+para 17 B e ~80 k/s para 11 B; a 32 MHz caberiam 4× mais transações por
+segundo, ou a mesma taxa com 4× mais folga para o wrap. Para 64 kHz com
+rajada de 11 B é a diferença entre 80 % e 20 % de ocupação do barramento.
+O preço é atravessar o PPIB (o DPPI do domínio MCU corre a 128 MHz, o de
+PERI a 16 MHz; a latência entre domínios não é especificada em ciclos) e a
+errata 8.
+
+**Consumo.** O datasheet do nRF54L15 não publica a corrente das SPIM nem
+dos domínios. O que se sabe: um GPIOTE IN em evento mantém o domínio do
+pino ligado em System ON idle (Academy: +17 µA medidos com PERI ligado na
+DK, 20 µA contra 3 µA); o domínio LP existe para ficar ligado com PERI
+desligado. Logo, para o caso 1 com poucas amostras por segundo, sensor no
+P0 com GPIOTE30 → DPPIC30 → SPIM30 é o caminho de menor consumo: PERI e
+MCU dormem entre transações, e no modo LATEST nem o contador é necessário.
+O modo QUEUE precisa do TIMER contador em PERI, o que reacende o domínio
+a cada transação. Os números exatos são para medir com PPK2; a estimativa
+em [docs/POWER.md](docs/POWER.md) usa os limites que o datasheet dá.
 
 ## Caso de alta taxa: ADXL382 a 64 kHz
 
@@ -140,7 +216,7 @@ do sensor e a folga do barramento.
    (domínio MCU), o que exige atravessar o PPIB entre DPPIC20 (GPIOTE20) e
    DPPIC00. A GPPI resolve a ligação; a latência deve ser confirmada.
 4. **Modo QUEUE**: `APP_BLOCK_SAMPLES = 64` (1000 IRQ/s), `APP_QUEUE_DEPTH ≥
-   512`, `CONFIG_ZERO_LATENCY_IRQS=y`. O wrap é feito logo após o `STARTED`
+   512`, `CONFIG_ZERO_LATENCY_IRQS=y`. O wrap é feito logo após o `STARTED` (nRF5340) ou `DMA.RX.READY` (nRF54L)
    da última transação do ciclo e tem a transação inteira de margem (12 µs
    a 8 MHz, 7 µs a 16 MHz). O contador `late_wraps` no log mostra se algum
    wrap ficou para trás. O modo LATEST não tem prazo.

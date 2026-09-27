@@ -391,12 +391,12 @@ def d2_timer():
 
 def d3_queue():
     d = Diagram("Modo QUEUE — EasyDMA array list em ping-pong, uma interrupção a cada N transações",
-                "N = 4 para caber no desenho; 2N slots + N de folga. O contador conta STARTED: o wrap do PTR é feito logo após o START do último slot",
-                12.0, ["SPIM STARTED (→ contador)", "contador (COUNT)", "RXD.PTR (array list)", "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1",
+                "N = 4 para caber no desenho; 2N slots + N de folga. O contador conta STARTED (DMA.RX.READY no nRF54L): o wrap do PTR é feito logo após o START do último slot",
+                12.0, ["SPIM STARTED / RX.READY (→ contador)", "contador (COUNT)", "RXD.PTR (array list)", "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1",
                        "ISR zero-latency (wrap)", "EGU → ISR da fila", "k_msgq"], LEGEND_TIMING)
     for k in range(11):
         t = 0.1 + k
-        d.pulse("SPIM STARTED (→ contador)", t, t + 0.06)
+        d.pulse("SPIM STARTED / RX.READY (→ contador)", t, t + 0.06)
         d.text(d.x(t + 0.03), d.yrow("contador (COUNT)") - 8, str((k % 8) + 1), BLUE, "middle", size=11, bold=True)
     slots = ["A0", "A1", "A2", "A3", "B0", "B1", "B2", "B3", "A0", "A1", "A2"]
     for k, s in enumerate(slots):
@@ -481,13 +481,77 @@ def d6_adxl382():
     d.note(P + 8.5, "SPIM 16 MHz: 11 B", "folga ≈ 8 µs: margem para CSNDUR maior e para o jitter do ODR do sensor", BLUE)
     d.pulse("prazo do wrap (QUEUE)", 1.0 + P + 0.5, 1.0 + 2 * P + 0.3, OFF,
             "STARTED do slot 2N−1 → START seguinte: a transação inteira (≈ 12 µs a 8 MHz, ≈ 7 µs a 16 MHz)", amp=14)
-    d.note(P + 8.5, "prazo do wrap (QUEUE)", "wrap logo após STARTED (contador de STARTED), ISR zero-latency no M33; LATEST não tem prazo", OFF)
+    d.note(P + 8.5, "prazo do wrap (QUEUE)", "wrap logo após STARTED (nRF5340) ou DMA.RX.READY (nRF54L), ISR zero-latency no M33; LATEST não tem prazo", OFF)
     d.marker(1.0, "15,6 µs")
     d.marker(1.0 + P, "")
     d.save("caso_adxl382_64k.svg")
 
 
+def c1_m33_vs_flpr():
+    """Bar chart: trigger -> wrap ISR latency and N = 1 ceiling, Cortex-M33 vs FLPR on the nRF54L15."""
+    h = 470
+    p = [defs(), f"<rect width='100%' height='100%' fill='white'/>",
+         header("nRF54L15 — Cortex-M33 × FLPR (RISC-V): latência da ISR de wrap e teto com uma IRQ por amostra",
+                "Bench N = 1 na nRF54L15 TAG (timer_dppi_spim, APP_WRAP_LATENCY_STATS): do COMPARE do trigger até a ISR; média e máximo por configuração")]
+    # ---- panel A: latency bars
+    ax, ay, aw, ah = 60, 100, 540, 260
+    ymax = 20.0
+    p.append(f"<text x='{ax}' y='{ay-14}' fill='{INK}' {font(12, bold=True)}>Latência trigger → ISR de wrap (µs)</text>")
+    for v in (0, 5, 10, 15, 20):
+        y = ay + ah - ah * v / ymax
+        p.append(f"<line x1='{ax}' y1='{y:.1f}' x2='{ax+aw}' y2='{y:.1f}' stroke='{LINE}' stroke-width='1' stroke-dasharray='2 4'/>")
+        p.append(f"<text x='{ax-8}' y='{y+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v}</text>")
+    bars = [("M33 padrão\n(core em idle)", 16.8, 17.3, OFF, OFF_TINT),
+            ("M33 padrão\n(core acordado)", 2.3, 2.6, WARN, WARN_TINT),
+            ("M33 + constant\nlatency", 16.8, 17.1, OFF, OFF_TINT),
+            ("M33 + RRAM\nstandby", 2.75, 2.93, OK, OK_TINT),
+            ("FLPR\n(código em RAM)", 2.43, 2.50, BLUE, BLUE_TINT)]
+    bw = 62
+    gap = (aw - bw * len(bars)) / (len(bars) + 1)
+    for i, (name, avg, mx, col, tint) in enumerate(bars):
+        x = ax + gap + i * (bw + gap)
+        y_avg = ay + ah - ah * avg / ymax
+        y_max = ay + ah - ah * mx / ymax
+        p.append(f"<rect x='{x:.1f}' y='{y_max:.1f}' width='{bw}' height='{ah - (y_max - ay):.1f}' rx='3' fill='{tint}'/>")
+        p.append(f"<rect x='{x:.1f}' y='{y_avg:.1f}' width='{bw}' height='{ah - (y_avg - ay):.1f}' rx='3' fill='{col}' filter='url(#shadow)'/>")
+        p.append(f"<text x='{x + bw/2:.1f}' y='{y_max - 6:.1f}' text-anchor='middle' fill='{col}' {font(11, bold=True)}>{avg:.1f} / {mx:.1f}</text>")
+        for k, line in enumerate(name.split("\n")):
+            p.append(f"<text x='{x + bw/2:.1f}' y='{ay + ah + 16 + 13*k}' text-anchor='middle' fill='{INK}' {font(10.5)}>{esc(line)}</text>")
+    p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+aw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
+    p.append(legend_svg(ax, ay + ah + 52, [(INK, "barra cheia = média"), (LINE, "barra clara = máximo"),
+                                          (OFF, "≈ 13 µs tIDLE2CPU + 2,5 µs de ISR")]))
+    # ---- panel B: notes
+    bx, by = 640, 100
+    box_h = 260
+    p.append(f"<rect x='{bx}' y='{by}' width='{W-24-bx}' height='{box_h}' rx='8' fill='{PANEL}' stroke='{LINE}' filter='url(#shadow)'/>")
+    lines = [
+        (INK, True, "O que os 17 µs são"),
+        (SLATE, False, "Core em idle: a RRAM fica em power-down e"),
+        (SLATE, False, "a 1ª instrução da ISR espera 13 µs (tIDLE2CPU)."),
+        (SLATE, False, "Constant latency sozinho não muda isso."),
+        (SLATE, False, "RRAM em standby ou FLPR (RAM): 2,4–2,8 µs."),
+        (INK, True, "Quando importa"),
+        (SLATE, False, "Só se um prazo de ISR for < ~18 µs com o core"),
+        (SLATE, False, "dormindo entre eventos: wrap a > 55 k/s."),
+        (SLATE, False, "Medido: zero late_wraps até 52,6 k/s (M33"),
+        (SLATE, False, "padrão), porque acima de 40 k/s o core não dorme."),
+        (INK, True, "Teto com uma IRQ por amostra (N = 1)"),
+        (SLATE, False, "M33: 50 k/s sem atraso.  FLPR: 40 k/s; a 50 k/s"),
+        (SLATE, False, "todos os wraps atrasam (core saturado)."),
+    ]
+    y = by + 22
+    for col, bold, s in lines:
+        p.append(f"<text x='{bx+14}' y='{y}' fill='{col}' {font(11, bold=bold)}>{esc(s)}</text>")
+        y += 18 if bold else 17
+    p.append(f"<text x='{W-24}' y='{h-10}' text-anchor='end' fill='{SLATE}' {font(10)}>{esc('Custo de corrente: low-power idle 2,9 µA (ION_IDLE8); constant latency 0,55 mA (ION_IDLE11); RRAM standby: não publicado, medir com PPK2')}</text>")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
+    with open(os.path.join(OUT, "m33_vs_flpr_nrf54l15.svg"), "w", encoding="utf-8") as fh:
+        fh.write(svg)
+    print("wrote m33_vs_flpr_nrf54l15.svg")
+
+
 if __name__ == "__main__":
+    c1_m33_vs_flpr()
     b1_blocks_int()
     b2_blocks_timer()
     d1_sensor_int()

@@ -121,6 +121,11 @@ static void run_sweep(const char *list)
 		LOG_INF("=== sweep: period %u us (%u.%u Hz) for %d s", period,
 			1000000 / period, (10000000 / period) % 10, CONFIG_APP_SWEEP_STEP_S);
 		run_window(&elapsed_ms);   /* settling second, not counted */
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+		uint32_t d1, d2, d3;
+
+		spim_dppi_wrap_latency(&d1, &d2, &d3, true);   /* discard the settling second */
+#endif
 
 		uint32_t x0 = spim_dppi_total_xfers(), q = 0, f = 0;
 		uint32_t s0 = spim_dppi_skipped(), d0 = spim_dppi_dropped(), l0 = spim_dppi_late_wraps();
@@ -141,6 +146,15 @@ static void run_sweep(const char *list)
 			period, (spim_dppi_total_xfers() - x0) / secs, q / secs, f / secs,
 			(f * 10 / secs) % 10, spim_dppi_skipped() - s0, spim_dppi_dropped() - d0,
 			spim_dppi_late_wraps() - l0);
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+		uint32_t mn, av, mx;
+
+		if (spim_dppi_wrap_latency(&mn, &av, &mx, true)) {
+			LOG_INF("=== wrap latency (trigger -> wrap ISR): min=%u.%02u avg=%u.%02u max=%u.%02u us",
+				mn / 1000, (mn % 1000) / 10, av / 1000, (av % 1000) / 10,
+				mx / 1000, (mx % 1000) / 10);
+		}
+#endif
 	}
 	LOG_INF("=== sweep done");
 }

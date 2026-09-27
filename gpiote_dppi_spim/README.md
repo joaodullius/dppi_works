@@ -161,7 +161,8 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
   usado no init. O GPIOTE IN é configurado sem handler (só evento). As
   ligações são feitas com `nrfx_gppi_conn_alloc` e `nrfx_gppi_conn_enable`.
   No modo QUEUE o EasyDMA usa `RX_POSTINC` (array list) sobre um anel de 3N
-  slots. O contador conta os `STARTED` da SPIM: `COMPARE1 = 2N` (início da
+  slots. O contador conta, por transação, o evento que libera o `.PTR`
+  (`DMA.RX.READY` no nRF54L, `STARTED` no nRF5340): `COMPARE1 = 2N` (início da
   última transação do ciclo, short `CLEAR`) dispara a ISR zero-latency que
   só reposiciona `RXD.PTR` para o slot 0, com a transação inteira de margem;
   `COMPARE0 = N+1` e `COMPARE2 = 1` (bloco A e bloco B completos) vão por
@@ -192,7 +193,11 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
 6. **GPIOTE compartilhado**: com `CONFIG_GPIO=y` o `gpio_nrfx` já é dono da
    instância. Usar `GPIOTE_NRFX_INST_BY_NODE` e `nrfx_gpiote_channel_alloc`
    em vez de inicializar de novo.
-7. **O wrap do anel é feito logo após `STARTED`, não após `END`**. O
+7. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
+   (nRF54L), não após `END`**. O `DMA.RX.READY` do nRF54L é, pela definição
+   do datasheet, "gerado quando o EasyDMA armazenou os registradores .PTR e
+   .MAXCNT, permitindo escrevê-los para a próxima sequência"; a nrfx o chama
+   de `RXSTARTED` e o exemplo o seleciona com `NRF_SPIM_HAS_DMA_REG`. O
    `RXD.PTR` é double-buffered e o hardware o reescreve (`PTR += MAXCNT`) a
    cada `START`; o datasheet diz que o registrador pode ser atualizado
    "imediatamente após o evento STARTED". Uma primeira versão contava `END`

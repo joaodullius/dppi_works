@@ -12,6 +12,9 @@
 
 #include <nrfx_spim.h>
 #include <nrfx_timer.h>
+#if defined(CONFIG_APP_RRAM_STANDBY)
+#include <hal/nrf_rramc.h>
+#endif
 #include <nrfx_egu.h>
 #include <helpers/nrfx_gppi.h>
 #include <hal/nrf_spim.h>
@@ -35,6 +38,15 @@ static nrfx_egu_t egu = NRFX_EGU_INSTANCE(DT_REG_ADDR(EGU_NODE));
 /* Trigger: free-running TIMER whose COMPARE0 starts every transaction */
 static nrfx_timer_t timer_trig = NRFX_TIMER_INSTANCE(DT_REG_ADDR(TRIG_TIMER_NODE));
 
+/* Event counted per transaction: the one after which .PTR may be rewritten */
+#if NRF_SPIM_HAS_DMA_REG && !defined(CONFIG_APP_COUNT_STARTED)
+#define CNT_EVENT      NRF_SPIM_EVENT_RXSTARTED   /* DMA.RX.READY (nRF54L) */
+#define CNT_EVENT_NAME "DMA.RX.READY"
+#else
+#define CNT_EVENT      NRF_SPIM_EVENT_STARTED
+#define CNT_EVENT_NAME "STARTED"
+#endif
+
 /* ---- Buffers ------------------------------------------------------------ */
 
 #if defined(CONFIG_APP_CONSUME_QUEUE)
@@ -47,6 +59,10 @@ static uint32_t dropped;
 static uint32_t skipped;
 static uint32_t late_wraps;
 static uint32_t cycles_done;   /* completed 2N-slot ring cycles */
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+/* Trigger-timer ticks (16 MHz) from the trigger COMPARE to the wrap ISR */
+static uint32_t lat_min = UINT32_MAX, lat_max, lat_sum, lat_n;
+#endif
 #else
 #define RING_SLOTS 1
 #endif
@@ -140,6 +156,12 @@ int spim_dppi_init(void)
 {
 	int err;
 
+#if defined(CONFIG_APP_RRAM_STANDBY)
+	/* Fast RRAM wake-up: the ISR code lives in RRAM, and after an idle
+	 * period the first fetch otherwise waits for the RRAM to power up */
+	nrf_rramc_lp_mode_set(NRF_RRAMC, NRF_RRAMC_LP_STANDBY);
+	LOG_INF("RRAMC low-power mode: standby");
+#endif
 #if defined(CONFIG_APP_REQUEST_HFXO)
 	err = hfxo_request();
 	if (err) {
@@ -207,14 +229,20 @@ static inline uint32_t spim_rx_ptr_get(void)
 }
 
 /*
- * The counter counts SPIM STARTED events (not END): slot k of a ring cycle
- * is in flight when the count is k+1. The array-list pointer register is
- * double-buffered and the hardware rewrites it (PTR += MAXCNT) at every
- * START, so the only safe moment for the CPU to write it is right after a
- * STARTED event, with the whole transaction (>= 11 us here) as margin. A
- * write made around END, as an END-counted design does, can coincide with
- * the next START and the hardware update: the pointer is then torn and the
- * DMA writes elsewhere (bus/MPU fault seen at 15 us period on the nRF5340).
+ * The counter counts the event that marks the pointer registers as free
+ * (not END): slot k of a ring cycle is in flight when the count is k+1. The
+ * array-list pointer register is double-buffered and the hardware rewrites
+ * it (PTR += MAXCNT) at every START, so the only safe moment for the CPU to
+ * write it is right after that, with the whole transaction (>= 11 us here)
+ * as margin. A write made around END, as an END-counted design does, can
+ * coincide with the next START and the hardware update: the pointer is then
+ * torn and the DMA writes elsewhere (bus/MPU fault at 15 us on the nRF5340).
+ *
+ * nRF54L: DMA.RX.READY ("EasyDMA has buffered the .PTR and .MAXCNT
+ * registers, allowing them to be written to prepare for the next sequence")
+ * is the literal definition of that window; nrfx names it RXSTARTED.
+ * nRF53/52: no such event, STARTED ("can be updated immediately after
+ * having received the STARTED event") is the reference.
  *
  *   COMPARE1 = 2N   START of slot 2N-1  -> wrap: PTR = ring[0] (this ISR,
  *                                          zero-latency), short CLEAR
@@ -227,6 +255,16 @@ static void cnt_handler(nrf_timer_event_t event_type, void *p_context)
 	ARG_UNUSED(p_context);
 
 	if (event_type == NRF_TIMER_EVENT_COMPARE1) {
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+		/* The trigger timer was cleared by the COMPARE that started this
+		 * transaction: its count is the latency up to here */
+		uint32_t t = nrfx_timer_capture(&timer_trig, NRF_TIMER_CC_CHANNEL1);
+
+		lat_min = MIN(lat_min, t);
+		lat_max = MAX(lat_max, t);
+		lat_sum += t;
+		lat_n++;
+#endif
 		/* Slot 2N-1 just started and the register already points at slot
 		 * 2N (slack). If it points further, the next START happened before
 		 * this ISR ran (one full transaction late): those samples went to
@@ -238,6 +276,28 @@ static void cnt_handler(nrf_timer_event_t event_type, void *p_context)
 		cycles_done++;
 	}
 }
+
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+bool spim_dppi_wrap_latency(uint32_t *min_ns, uint32_t *avg_ns, uint32_t *max_ns, bool reset)
+{
+	unsigned int key = irq_lock();
+	uint32_t n = lat_n, mn = lat_min, mx = lat_max, sum = lat_sum;
+
+	if (reset) {
+		lat_min = UINT32_MAX;
+		lat_max = lat_sum = lat_n = 0;
+	}
+	irq_unlock(key);
+	if (n == 0) {
+		return false;
+	}
+	/* 16 MHz ticks -> ns (62.5 ns each) */
+	*min_ns = mn * 125 / 2;
+	*max_ns = mx * 125 / 2;
+	*avg_ns = (uint32_t)((uint64_t)sum * 125 / 2 / n);
+	return true;
+}
+#endif
 
 /*
  * EGU ISR (normal priority): COMPARE0/COMPARE2 reach the EGU through DPPI, so
@@ -395,7 +455,9 @@ bool spim_dppi_latest(uint8_t out[SENSOR_BURST_LEN])
 
 static int trigger_init(uint32_t *eep)
 {
-	nrfx_timer_config_t cfg = NRFX_TIMER_DEFAULT_CONFIG(NRFX_MHZ_TO_HZ(1));
+	/* 1 MHz is enough for the period; the latency bench needs 16 MHz resolution */
+	nrfx_timer_config_t cfg = NRFX_TIMER_DEFAULT_CONFIG(
+		IS_ENABLED(CONFIG_APP_WRAP_LATENCY_STATS) ? NRFX_MHZ_TO_HZ(16) : NRFX_MHZ_TO_HZ(1));
 	int err;
 
 	cfg.bit_width = NRF_TIMER_BIT_WIDTH_32;
@@ -452,12 +514,12 @@ int spim_dppi_start(void)
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
 
-	/* trigger event -> SPIM START ; SPIM STARTED -> counter COUNT */
+	/* trigger event -> SPIM START ; SPIM STARTED / DMA.RX.READY -> counter COUNT */
 	err = nrfx_gppi_conn_alloc(eep, nrfx_spim_start_task_address_get(&spim), &h_start);
 	if (err < 0) {
 		return err;
 	}
-	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, NRF_SPIM_EVENT_STARTED),
+	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, CNT_EVENT),
 				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
 				   &h_count);
 	if (err < 0) {
@@ -487,8 +549,9 @@ int spim_dppi_start(void)
 
 	nrfx_timer_clear(&timer_trig);
 	nrfx_timer_enable(&timer_trig);
-	LOG_INF("DPPI connected, %s consumption, burst %u bytes%s",
+	LOG_INF("DPPI connected, %s consumption, burst %u bytes, counting %s%s",
 		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? "queue (wrap ISR + EGU)" : "latest",
-		SENSOR_BURST_LEN, IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
+		SENSOR_BURST_LEN, CNT_EVENT_NAME,
+		IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
 	return 0;
 }

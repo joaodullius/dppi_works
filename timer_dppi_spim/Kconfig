@@ -115,6 +115,39 @@ config APP_SPI_RX_DELAY
 	help
 	  Only on SPIM instances that have RXDELAY (nRF5340 SPIM4, nRF54L SPIMxx).
 
+config APP_COUNT_STARTED
+	bool "Count SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
+	depends on APP_CONSUME_QUEUE
+	default n
+	help
+	  On nRF54L the counter normally counts DMA.RX.READY, the event the
+	  datasheet defines as "registers can be written for the next
+	  sequence". This option counts STARTED instead, to compare the two
+	  (wrap latency, late wraps). No effect on nRF53/52, which have no
+	  DMA.RX.READY event.
+
+config APP_RRAM_STANDBY
+	bool "Keep the RRAM in standby instead of power-down during idle (nRF54L, bench)"
+	depends on HAS_HW_NRF_RRAMC
+	default n
+	help
+	  By default the RRAMC powers the RRAM down in System ON idle, so the
+	  first instruction fetch after a wake-up waits for it (measured ~15 us
+	  on the nRF54L15). Standby mode (POWER.LOWPOWERCONFIG.MODE) gives a
+	  fast wake-up at a higher idle current; the datasheet recommends it
+	  together with Constant Latency mode for the lowest latency.
+
+config APP_WRAP_LATENCY_STATS
+	bool "Measure the wrap ISR latency (bench)"
+	depends on APP_CONSUME_QUEUE
+	default n
+	help
+	  Runs the trigger TIMER at 16 MHz and, in the wrap ISR, captures the
+	  time elapsed since the trigger COMPARE that started the transaction:
+	  DPPI -> SPIM START -> STARTED/DMA.RX.READY -> DPPI -> counter COMPARE
+	  -> IRQ -> ISR. Min/avg/max are printed with the reports. Used to
+	  compare the Cortex-M33 and the FLPR (RISC-V) on the nRF54L15.
+
 config APP_REQUEST_HFXO
 	bool "Request the HFXO so TIMERs run from the crystal"
 	default y

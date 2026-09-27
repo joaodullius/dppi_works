@@ -39,4 +39,9 @@ uint32_t spim_dppi_late_wraps(void);
 /* Change the trigger TIMER period at runtime (restarts the timer) */
 void spim_dppi_set_period_us(uint32_t period_us);
 
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+/* Trigger COMPARE -> wrap ISR latency since the last reset; false if no sample */
+bool spim_dppi_wrap_latency(uint32_t *min_ns, uint32_t *avg_ns, uint32_t *max_ns, bool reset);
+#endif
+
 #endif /* SPIM_DPPI_H_ */
