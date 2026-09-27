@@ -1,0 +1,71 @@
+*** Booting nRF Connect SDK v3.4.1-b20f8619ba9a ***
+*** Using Zephyr OS v4.4.2-33fa6a7aac6a ***
+[00:00:00.002,210] [0m<inf> app: timer_dppi_spim: BMI270, trigger=timer 1000 us, drain every 1000 us[0m
+[00:00:00.007,849] [0m<inf> spim_dppi: HFXO running[0m
+[00:00:00.007,992] [0m<inf> spim_dppi: SPIM @0x500c8000, hardware CSN on pin 39, 8000000 Hz, CSNDUR 2, RXDELAY 1[0m
+[00:00:00.010,859] [0m<inf> bmi270: BMI270 CHIP_ID 0x24[0m
+[00:00:00.041,760] [0m<inf> bmi270: config upload: 328 bytes in 11 chunks, 23 ms; INIT_ADDR readback 0x0A00[0m
+[00:00:00.043,030] [0m<inf> bmi270: config file loaded (328 bytes)[0m
+[00:00:00.096,400] [0m<inf> bmi270: ACC_CONF 0xAA (+/-2 g, ODR 400 Hz)[0m
+[00:00:00.096,572] [0m<inf> bmi270: PWR_CTRL 0x04 (accel on)[0m
+[00:00:00.096,707] [0m<inf> app: BMI270 ODR 400.0 Hz[0m
+[00:00:00.096,840] [0m<inf> spim_dppi: trigger: TIMER @0x500ca000 every 1000 us[0m
+[00:00:00.097,026] [0m<inf> spim_dppi: DPPI connected, burst 17 bytes, ring 512 slots, drain every 1000 us, wrap on DMA.RX.READY[0m
+[00:00:00.097,302] [0m<inf> app: === sweep: period 1000 us (1000.0 Hz) for 6 s[0m
+[00:00:01.097,818] [0m<inf> app: t=1000 ms xfers=1000 queued=999 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:00:06.098,707] [0m<inf> app: === sweep result: period 1000 us: xfers/s=1000 queued/s=1000 fresh/s=402.0 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:06.099,003] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.31 avg=15.44 max=16.25 us[0m
+[00:00:06.099,204] [0m<inf> app: === sweep: period 500 us (2000.0 Hz) for 6 s[0m
+[00:00:07.100,089] [0m<inf> app: t=2000 ms xfers=8001 queued=2000 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.64 m/s^2[0m
+[00:00:12.100,367] [0m<inf> app: === sweep result: period 500 us: xfers/s=1999 queued/s=1999 fresh/s=401.8 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:12.100,663] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.31 avg=14.41 max=16.25 us[0m
+[00:00:12.100,867] [0m<inf> app: === sweep: period 250 us (4000.0 Hz) for 6 s[0m
+[00:00:13.100,139] [0m<inf> app: t=3000 ms xfers=21997 queued=3994 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:00:18.100,636] [0m<inf> app: === sweep result: period 250 us: xfers/s=3999 queued/s=3999 fresh/s=401.8 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:18.100,931] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.31 avg=14.53 max=16.25 us[0m
+[00:00:18.101,136] [0m<inf> app: === sweep: period 100 us (10000.0 Hz) for 6 s[0m
+[00:00:19.101,272] [0m<inf> app: t=4000 ms xfers=51997 queued=9995 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.53 max=0.63 m/s^2[0m
+[00:00:24.101,529] [0m<inf> app: === sweep result: period 100 us: xfers/s=9998 queued/s=9998 fresh/s=401.8 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:24.101,824] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.25 avg=8.51 max=16.25 us[0m
+[00:00:24.102,027] [0m<inf> app: === sweep: period 50 us (20000.0 Hz) for 6 s[0m
+[00:00:25.102,955] [0m<inf> app: t=5000 ms xfers=122011 queued=20008 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.53 max=0.63 m/s^2[0m
+[00:00:30.103,627] [0m<inf> app: === sweep result: period 50 us: xfers/s=19997 queued/s=19999 fresh/s=401.8 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:30.103,925] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.62 avg=1.81 max=1.87 us[0m
+[00:00:30.104,126] [0m<inf> app: === sweep: period 40 us (25000.0 Hz) for 6 s[0m
+[00:00:31.104,584] [0m<inf> app: t=6000 ms xfers=247026 queued=25010 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:00:36.104,889] [0m<inf> app: === sweep result: period 40 us: xfers/s=24995 queued/s=24997 fresh/s=402.0 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:36.105,187] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.81 avg=1.81 max=1.87 us[0m
+[00:00:36.105,388] [0m<inf> app: === sweep: period 30 us (33333.3 Hz) for 6 s[0m
+[00:00:37.105,479] [0m<inf> app: t=7000 ms xfers=405358 queued=33332 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.53 max=0.64 m/s^2[0m
+[00:00:42.106,011] [0m<inf> app: === sweep result: period 30 us: xfers/s=33328 queued/s=33331 fresh/s=402.0 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:42.106,307] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.25 avg=1.30 max=1.87 us[0m
+[00:00:42.106,508] [0m<inf> app: === sweep: period 25 us (40000.0 Hz) for 6 s[0m
+[00:00:43.107,100] [0m<inf> app: t=8000 ms xfers=612050 queued=40023 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:00:48.107,784] [0m<inf> app: === sweep result: period 25 us: xfers/s=39995 queued/s=39999 fresh/s=402.0 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:48.108,082] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.56 avg=1.81 max=1.81 us[0m
+[00:00:48.108,282] [0m<inf> app: === sweep: period 20 us (50000.0 Hz) for 6 s[0m
+[00:00:49.108,582] [0m<inf> app: t=9000 ms xfers=862072 queued=50012 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:00:54.109,037] [0m<inf> app: === sweep result: period 20 us: xfers/s=49992 queued/s=49996 fresh/s=402.0 skipped=0 dropped=0 late_wraps=0 overflows=0 torn=0[0m
+[00:00:54.109,333] [0m<inf> app: === latency (trigger -> wrap ISR): min=1.25 avg=1.27 max=1.87 us[0m
+[00:00:54.109,522] [0m<inf> app: === sweep done[0m
+[00:00:55.109,838] [0m<inf> app: t=1000 ms xfers=1162088 queued=50032 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:00:56.110,659] [0m<inf> app: t=2000 ms xfers=1212121 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:00:57.111,468] [0m<inf> app: t=3000 ms xfers=1262154 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.53 max=0.64 m/s^2[0m
+[00:00:58.111,118] [0m<inf> app: t=4000 ms xfers=1312129 queued=49976 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.64 m/s^2[0m
+[00:00:59.111,920] [0m<inf> app: t=5000 ms xfers=1362161 queued=50031 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.64 m/s^2[0m
+[00:01:00.112,740] [0m<inf> app: t=6000 ms xfers=1412194 queued=50033 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:01:01.113,559] [0m<inf> app: t=7000 ms xfers=1462227 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:01:02.113,191] [0m<inf> app: t=8000 ms xfers=1512201 queued=49974 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:01:03.114,010] [0m<inf> app: t=9000 ms xfers=1562234 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.63 m/s^2[0m
+[00:01:04.114,821] [0m<inf> app: t=10000 ms xfers=1612267 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.65 m/s^2[0m
+[00:01:05.115,640] [0m<inf> app: t=11000 ms xfers=1662300 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:01:06.116,450] [0m<inf> app: t=12000 ms xfers=1712333 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:01:07.116,114] [0m<inf> app: t=13000 ms xfers=1762308 queued=49980 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.64 m/s^2[0m
+[00:01:08.116,901] [0m<inf> app: t=14000 ms xfers=1812340 queued=50027 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:01:09.117,721] [0m<inf> app: t=15000 ms xfers=1862373 queued=50033 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.66 m/s^2[0m
+[00:01:10.118,541] [0m<inf> app: t=16000 ms xfers=1912406 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:01:11.118,173] [0m<inf> app: t=17000 ms xfers=1962380 queued=49974 fresh=401 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:01:12.118,992] [0m<inf> app: t=18000 ms xfers=2012413 queued=50033 fresh=403 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.53 max=0.63 m/s^2[0m
+[00:01:13.119,802] [0m<inf> app: t=19000 ms xfers=2062446 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.54 max=0.63 m/s^2[0m
+[00:01:14.120,622] [0m<inf> app: t=20000 ms xfers=2112479 queued=50033 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.64 m/s^2[0m
+[00:01:15.120,254] [0m<inf> app: t=21000 ms xfers=2162453 queued=49974 fresh=402 skipped=0 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.55 max=0.64 m/s^2[0m

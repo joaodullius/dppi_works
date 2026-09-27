@@ -29,7 +29,7 @@ static float to_ms2(int16_t raw)
 	return raw * sensor->mg_per_lsb * G_MS2 / 1000.0f;
 }
 
-/* Per-report window statistics (QUEUE mode) */
+/* Per-report window statistics */
 struct stats {
 	uint32_t n, fresh;
 	int16_t zmin, zmax;
@@ -54,7 +54,7 @@ static void run_window(uint32_t *elapsed_ms)
 	int64_t end = k_uptime_get() + CONFIG_APP_REPORT_PERIOD_MS;
 
 	while (k_uptime_get() < end) {
-		/* One sample per get, in order; the ISR fills the queue N at a time */
+		/* One sample per get, in order; the drain thread (or the END ISR) fills it */
 		if (k_msgq_get(&sample_q, raw, K_MSEC(5)) != 0) {
 			continue;
 		}
@@ -66,9 +66,9 @@ static void run_window(uint32_t *elapsed_ms)
 		win.zsum += s.z;
 	}
 	*elapsed_ms += CONFIG_APP_REPORT_PERIOD_MS;
-	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u skipped=%u dropped=%u late=%u ovf=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
+	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u skipped=%u dropped=%u late=%u ovf=%u torn=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
 		*elapsed_ms, spim_dppi_total_xfers(), win.n, win.fresh, spim_dppi_skipped(),
-		spim_dppi_dropped(), spim_dppi_late_wraps(), spim_dppi_overflows(),
+		spim_dppi_dropped(), spim_dppi_late_wraps(), spim_dppi_overflows(), spim_dppi_torn(),
 		win.n ? (double)to_ms2(win.zsum / (int32_t)win.n) : 0.0,
 		win.n ? (double)to_ms2(win.zmin) : 0.0, win.n ? (double)to_ms2(win.zmax) : 0.0);
 	stats_reset(&win);
@@ -103,7 +103,7 @@ static void run_sweep(const char *list)
 		spim_dppi_wrap_latency(&d1, &d2, &d3, true);   /* discard the settling second */
 #endif
 
-		uint32_t x0 = spim_dppi_total_xfers(), q = 0, f = 0;
+		uint32_t x0 = spim_dppi_total_xfers(), q = 0, f = 0, t0 = spim_dppi_torn();
 		uint32_t s0 = spim_dppi_skipped(), d0 = spim_dppi_dropped(), l0 = spim_dppi_late_wraps();
 		uint8_t raw[SENSOR_BURST_LEN];
 		struct sensor_sample s;
@@ -118,15 +118,16 @@ static void run_sweep(const char *list)
 		}
 		uint32_t secs = CONFIG_APP_SWEEP_STEP_S - 1;
 
-		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u overflows=%u",
+		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u overflows=%u torn=%u",
 			period, (spim_dppi_total_xfers() - x0) / secs, q / secs, f / secs,
 			(f * 10 / secs) % 10, spim_dppi_skipped() - s0, spim_dppi_dropped() - d0,
-			spim_dppi_late_wraps() - l0, spim_dppi_overflows());
+			spim_dppi_late_wraps() - l0, spim_dppi_overflows(), spim_dppi_torn() - t0);
 #if defined(CONFIG_APP_WRAP_LATENCY_STATS)
 		uint32_t mn, av, mx;
 
 		if (spim_dppi_wrap_latency(&mn, &av, &mx, true)) {
-			LOG_INF("=== wrap latency (trigger -> wrap ISR): min=%u.%02u avg=%u.%02u max=%u.%02u us",
+			LOG_INF("=== latency (trigger -> %s ISR): min=%u.%02u avg=%u.%02u max=%u.%02u us",
+				IS_ENABLED(CONFIG_APP_PER_SAMPLE_IRQ) ? "sample" : "wrap",
 				mn / 1000, (mn % 1000) / 10, av / 1000, (av % 1000) / 10,
 				mx / 1000, (mx % 1000) / 10);
 		}
@@ -140,10 +141,16 @@ int main(void)
 	int err;
 	uint32_t elapsed_ms = 0;
 
+#if defined(CONFIG_APP_PER_SAMPLE_IRQ)
+	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, one interrupt per sample%s", sensor->name,
+		CONFIG_APP_SAMPLE_PERIOD_US,
+		IS_ENABLED(CONFIG_APP_QUEUE_FRESH_ONLY) ? " fresh-only" : "");
+#else
 	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, drain every %u us%s", sensor->name,
 		CONFIG_APP_SAMPLE_PERIOD_US,
 		CONFIG_APP_DRAIN_PERIOD_US,
 		IS_ENABLED(CONFIG_APP_QUEUE_FRESH_ONLY) ? " fresh-only" : "");
+#endif
 
 	err = spim_dppi_init();
 	if (err) {

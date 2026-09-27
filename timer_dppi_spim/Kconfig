@@ -63,8 +63,36 @@ config APP_RING_SLOTS
 	default 256
 	range 8 4096
 	help
-	  Must hold the samples of more than one drain period with slack for
-	  timer jitter and scheduling delay; 8 guard slots are added after it.
+	  The wrap is armed once the DMA is past half of the ring, so the ring
+	  must hold at least two drain periods of samples (ring >= 2 x rate x
+	  period), plus slack for scheduling delay; 8 guard slots are added
+	  after it and an overflow into them is counted.
+
+config APP_PER_SAMPLE_IRQ
+	bool "Deliver each sample from the SPIM END interrupt"
+	default n
+	help
+	  One interrupt per transaction instead of the drain thread: a single
+	  buffer, and the END ISR copies the sample that just ended into the
+	  queue (latency = ISR entry + copy; ~3 us with the core awake, ~17 us
+	  from idle on the nRF54L15 M33, 14-25 us on the nRF5340). Valid while
+	  the sample period exceeds the transaction time plus that latency; a
+	  transaction that starts during the copy is detected and the sample
+	  dropped as "torn". No ring, no wrap; APP_DRAIN_PERIOD_US,
+	  APP_RING_SLOTS and APP_WRAP_AWAKE_BELOW_US are unused.
+
+config APP_WRAP_AWAKE_BELOW_US
+	int "Wait awake for the wrap when the sample period is below this (us)"
+	default 64
+	range 0 10000
+	depends on !APP_PER_SAMPLE_IRQ
+	help
+	  When the wrap is due and the recent samples were closer together than
+	  this, the drain thread stays awake until the wrap ISR has run (at most
+	  a quarter of the drain period or 8 sample periods) instead of going
+	  back to sleep. Waking the core from idle for that IRQ costs ~17 us
+	  on the nRF54L15 (RRAM) and more than 14-25 us on the nRF5340, more
+	  than one sample period at high rates. 0 disables the wait.
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"
@@ -103,7 +131,7 @@ config APP_SPI_RX_DELAY
 	  Only on SPIM instances that have RXDELAY (nRF5340 SPIM4, nRF54L SPIMxx).
 
 config APP_COUNT_STARTED
-	bool "Count SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
+	bool "Arm the wrap on SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
 	default n
 	help
 	  On nRF54L the ring wrap is armed on DMA.RX.READY, the event the
@@ -118,8 +146,8 @@ config APP_RRAM_STANDBY
 	default n
 	help
 	  By default the RRAMC powers the RRAM down in System ON idle, so the
-	  first instruction fetch after a wake-up waits for it (measured ~15 us
-	  on the nRF54L15). Standby mode (POWER.LOWPOWERCONFIG.MODE) gives a
+	  first instruction fetch after a wake-up waits for it (measured ~16-17 us
+	  on the nRF54L15). Standby mode (RRAMC.POWER.LOWPOWERCONFIG.MODE) gives a
 	  fast wake-up at a higher idle current; the datasheet recommends it
 	  together with Constant Latency mode for the lowest latency.
 

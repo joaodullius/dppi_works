@@ -18,20 +18,22 @@ int spim_dppi_init(void);
 /* Arm the repeated burst, connect DPPI, start the trigger. Returns errno. */
 int spim_dppi_start(void);
 
-/* Total SPIM transactions started since start (laps * ring + DMA pointer) */
+/* Total SPIM transactions started since start (finished laps + DMA pointer) */
 uint32_t spim_dppi_total_xfers(void);
 
 
 /* One SENSOR_BURST_LEN-byte raw burst per message, in order */
 extern struct k_msgq sample_q;
-/* Samples the ISR could not queue because the queue was full */
+/* Samples that could not be queued because the queue was full */
 uint32_t spim_dppi_dropped(void);
-/* Samples the ISR skipped as repeats (APP_QUEUE_FRESH_ONLY) */
+/* Samples skipped as repeats (APP_QUEUE_FRESH_ONLY) */
 uint32_t spim_dppi_skipped(void);
-/* Wraps written after the next START had begun (one sample went to a guard slot) */
+/* Wraps written after the next START had begun (that transaction used slot k+1; no loss) */
 uint32_t spim_dppi_late_wraps(void);
-/* Drains that found the DMA past the ring end (drain period too long for the ring) */
+/* Laps in which the DMA reached the guard slots (ring too small for the drain period) */
 uint32_t spim_dppi_overflows(void);
+/* Per-sample mode: samples the next transaction overwrote during the copy (dropped) */
+uint32_t spim_dppi_torn(void);
 
 /* Change the trigger TIMER period at runtime (restarts the timer) */
 void spim_dppi_set_period_us(uint32_t period_us);
