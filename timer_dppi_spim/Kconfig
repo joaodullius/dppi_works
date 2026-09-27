@@ -53,10 +53,14 @@ config APP_DRAIN_PERIOD_US
 	default 10000
 	range 100 1000000
 	help
-	  A thread wakes up every period, reads the EasyDMA pointer, pushes the
-	  slots that arrived into the message queue and arms the ring wrap.
-	  Delivery latency = one period; interrupts per second = 1 / period
-	  (wake-up) + 1 / period (wrap), independent of the sample rate.
+	  A thread wakes up every period, reads the EasyDMA pointer and pushes
+	  the slots that arrived into the message queue; once per lap (every
+	  APP_RING_SLOTS/2 samples or more) it also arms the ring wrap. The
+	  actual period is rounded up to the kernel tick (plus one tick) and
+	  the drain time is added to it. Delivery latency is at most that real
+	  period (at low rates the newest sample is delivered once one
+	  transaction time has passed without a new START). Interrupts per
+	  second = 1 / period (wake-up) + wraps.
 
 config APP_RING_SLOTS
 	int "Ring size in samples"
@@ -74,11 +78,12 @@ config APP_PER_SAMPLE_IRQ
 	help
 	  One interrupt per transaction instead of the drain thread: a single
 	  buffer, and the END ISR copies the sample that just ended into the
-	  queue (latency = ISR entry + copy; ~3 us with the core awake, ~17 us
-	  from idle on the nRF54L15 M33, 14-25 us on the nRF5340). Valid while
-	  the sample period exceeds the transaction time plus that latency; a
+	  queue (latency = ISR entry + copy; ~1.2 us with the core awake, up to
+	  ~17 us from idle on the nRF54L15 M33). Valid while the sample period
+	  exceeds the transaction time plus that latency plus the copy; a
 	  transaction that starts during the copy is detected and the sample
-	  dropped as "torn". No ring, no wrap; APP_DRAIN_PERIOD_US,
+	  dropped as "torn", one that starts before the ISR entry is not (the
+	  data may then be mixed). No ring, no wrap; APP_DRAIN_PERIOD_US,
 	  APP_RING_SLOTS and APP_WRAP_AWAKE_BELOW_US are unused.
 
 config APP_WRAP_AWAKE_BELOW_US
@@ -91,8 +96,9 @@ config APP_WRAP_AWAKE_BELOW_US
 	  this, the drain thread stays awake until the wrap ISR has run (at most
 	  a quarter of the drain period or 8 sample periods) instead of going
 	  back to sleep. Waking the core from idle for that IRQ costs ~17 us
-	  on the nRF54L15 (RRAM) and more than 14-25 us on the nRF5340, more
-	  than one sample period at high rates. 0 disables the wait.
+	  on the nRF54L15 (RRAM), more than one sample period at high rates,
+	  and the nRF5340 also missed periods of 14-25 us that way. 0 disables
+	  the wait.
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"
@@ -102,13 +108,14 @@ config APP_QUEUE_DEPTH
 	  consumer delay.
 
 config APP_QUEUE_FRESH_ONLY
-	bool "Drop repeated samples in the drain (data-ready bit clear)"
+	bool "Drop repeated samples before queueing (data-ready bit clear)"
 	default n
 	help
 	  Transactions faster than the sensor ODR re-read the previous sample.
-	  With this option the drain thread checks the data-ready bit in the
-	  burst's STATUS byte and only queues new samples, so the queue and the
-	  consumer see the sensor's real rate. Skipped samples are counted.
+	  With this option the drain thread (or the END ISR, per-sample mode)
+	  checks the data-ready bit in the burst's STATUS byte and only queues
+	  new samples, so the queue and the consumer see the sensor's real
+	  rate. Skipped samples are counted.
 
 config APP_SPI_FREQ_HZ
 	int "SPIM clock frequency in Hz"
@@ -130,7 +137,7 @@ config APP_SPI_RX_DELAY
 	help
 	  Only on SPIM instances that have RXDELAY (nRF5340 SPIM4, nRF54L SPIMxx).
 
-config APP_COUNT_STARTED
+config APP_WRAP_ON_STARTED
 	bool "Arm the wrap on SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
 	default n
 	help
@@ -152,12 +159,13 @@ config APP_RRAM_STANDBY
 	  together with Constant Latency mode for the lowest latency.
 
 config APP_WRAP_LATENCY_STATS
-	bool "Measure the wrap ISR latency (bench)"
+	bool "Measure the delivering ISR latency (bench)"
 	default n
 	help
-	  Runs the trigger TIMER at 16 MHz and, in the wrap ISR, captures the
-	  time elapsed since the trigger COMPARE that started the transaction:
-	  DPPI -> SPIM START -> STARTED/DMA.RX.READY -> IRQ -> wrap ISR.
+	  Runs the trigger TIMER at 16 MHz and, in the wrap ISR (or the END ISR
+	  in per-sample mode), captures the time elapsed since the trigger
+	  COMPARE that started the transaction: DPPI -> SPIM START ->
+	  STARTED/DMA.RX.READY (or END) -> IRQ -> ISR.
 	  Min/avg/max are printed with the reports. Used to
 	  compare the Cortex-M33 and the FLPR (RISC-V) on the nRF54L15.
 

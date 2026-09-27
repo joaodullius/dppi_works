@@ -2,7 +2,7 @@
  * Hardware engine: SPIM with hardware CSN, repeated EasyDMA burst started
  * through DPPI by a TIMER COMPARE event. The bursts land in a ring (RX
  * pointer post-increment); a periodic drain thread moves them into a k_msgq
- * and re-arms the ring wrap on the SPIM READY IRQ.
+ * and, once per lap, re-arms the ring wrap on the SPIM READY IRQ.
  */
 #ifndef SPIM_DPPI_H_
 #define SPIM_DPPI_H_
@@ -28,7 +28,7 @@ extern struct k_msgq sample_q;
 uint32_t spim_dppi_dropped(void);
 /* Samples skipped as repeats (APP_QUEUE_FRESH_ONLY) */
 uint32_t spim_dppi_skipped(void);
-/* Wraps written after the next START had begun (that transaction used slot k+1; no loss) */
+/* Wraps written after the next START had begun (that transaction's sample is skipped) */
 uint32_t spim_dppi_late_wraps(void);
 /* Laps in which the DMA reached the guard slots (ring too small for the drain period) */
 uint32_t spim_dppi_overflows(void);

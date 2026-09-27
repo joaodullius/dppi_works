@@ -67,9 +67,9 @@ Ferramentas:
 | `APP_SWEEP_PERIODS_US` | "" | lista de períodos para varrer (bancada); imprime `=== sweep result` por período |
 | `APP_SWEEP_STEP_S` | 10 | segundos por passo da varredura |
 | `APP_PER_SAMPLE_IRQ` | n | modo por amostra: um buffer, IRQ de `END` por transação (ver `gpiote_dppi_spim`); os três símbolos seguintes não têm efeito |
-| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s): latência de entrega ≤ T + tick + drenagem |
-| `APP_RING_SLOTS` | 256 | slots do anel (8 a 4096), mais 8 de guarda; ≥ 2 × transações por drenagem |
-| `APP_WRAP_AWAKE_BELOW_US` | 64 | abaixo desse espaçamento entre transações a thread espera o wrap acordada; 0 desliga |
+| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s); o período real é T arredondado ao tick (32 µs) mais um tick mais a drenagem, e a latência de entrega ≤ esse T real em taxa baixa |
+| `APP_RING_SLOTS` | 256 | slots do anel (8 a 4096), mais 8 de guarda; ≥ 2 × transações por drenagem (com o T real). A guarda só acusa o estouro; além dela a RAM corrompe |
+| `APP_WRAP_AWAKE_BELOW_US` | 64 | abaixo desse espaçamento entre transações a thread espera o wrap acordada (no máximo min(T/4, 8 períodos + 8 µs)); 0 desliga |
 | `APP_QUEUE_DEPTH` | 256 | profundidade da `k_msgq` em amostras |
 | `APP_QUEUE_FRESH_ONLY` | n | filtro na entrega (drenagem ou ISR de `END`): só amostras com data-ready entram na fila; `skipped` conta as repetidas |
 | `APP_SPI_FREQ_HZ` | 4 MHz | clock da SPIM (8 MHz na TAG) |
@@ -78,8 +78,8 @@ Ferramentas:
 | `APP_REQUEST_HFXO` | y (se há clock control) | TIMER com período exato |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório no log |
 | `APP_WRAP_LATENCY_STATS` | n | bancada: TIMER de disparo a 16 MHz e captura, na ISR de wrap (ou na ISR de `END` no modo por amostra), do tempo desde o `COMPARE` que iniciou a transação (min/avg/max) |
-| `APP_COUNT_STARTED` | n | bancada: no nRF54L arma o wrap na IRQ de `STARTED` em vez de `DMA.RX.READY` |
-| `APP_RRAM_STANDBY` | n | nRF54L, bancada: RRAM em standby em idle (`RRAMC.POWER.LOWPOWERCONFIG.MODE`) em vez de power-down; wake-up rápido de qualquer ISR. Não é necessário para o wrap |
+| `APP_WRAP_ON_STARTED` | n | bancada: no nRF54L arma o wrap na IRQ de `STARTED` em vez de `DMA.RX.READY` |
+| `APP_RRAM_STANDBY` | n | nRF54L, bancada: RRAM em standby em idle (`RRAMC.POWER.LOWPOWERCONFIG.MODE`) em vez de power-down; wake-up rápido (16–17 µs a menos) de qualquer ISR. Não é necessário para o wrap |
 
 ### Devicetree
 
@@ -98,15 +98,15 @@ alta no modo drenado usam T = 1 ms, anel de 512 slots e fila de 1024:
 | Arquivo | Cenário |
 |---|---|
 | `sweep-tag.conf` | timer × ODR na TAG: 2500 a 2200 µs, filtro ligado, T = 10 ms |
-| `bus-max-tag.conf` | teto do barramento na TAG: 40 a 16 µs, T = 1 ms, anel 512, fila 1024, latência do wrap |
-| `bus-64k-thingy.conf` | teto do barramento na Thingy:53: 100 a 10 µs, T = 1 ms, anel 512, fila 1024 |
-| `per-sample-tag.conf` | modo por amostra na TAG: 1000 a 19 µs, latência trigger → ISR de `END`, filtro ligado |
-| `per-sample-thingy.conf` | modo por amostra na Thingy:53: 1000 a 14 µs, filtro ligado |
-| `n1-tag.conf` | latência do wrap na TAG: 1000 a 20 µs, T = 1 ms; de 1000 a 100 µs a IRQ de wrap vem de idle, de 50 µs para baixo a drenagem espera acordada |
-| `n1-tag-started.conf` | sobre o anterior: wrap na IRQ de `STARTED` em vez de `DMA.RX.READY` |
+| `bus-max-tag.conf` | teto do barramento na TAG: 40 a 16 µs, 8 MHz, T = 1 ms, anel 512, fila 1024, latência do wrap |
+| `bus-64k-thingy.conf` | teto do barramento na Thingy:53: 100 a 10 µs, 8 MHz, T = 1 ms, anel 512, fila 1024, latência do wrap |
+| `per-sample-tag.conf` | modo por amostra na TAG: 1000 a 19 µs, 8 MHz, latência trigger → ISR de `END`, filtro ligado |
+| `per-sample-thingy.conf` | modo por amostra na Thingy:53: 1000 a 14 µs, 8 MHz, latência trigger → ISR de `END`, filtro ligado |
+| `wrap-latency-tag.conf` | latência do wrap na TAG: 1000 a 20 µs, T = 1 ms; de 1000 a 100 µs a IRQ de wrap vem de idle, de 50 µs para baixo a drenagem espera acordada |
+| `wrap-latency-tag-started.conf` | sobre o anterior: wrap na IRQ de `STARTED` em vez de `DMA.RX.READY` (`APP_WRAP_ON_STARTED`) |
 | `sweep-flpr.conf` | FLPR com `hfxo_launcher`: 100 a 20 µs, T = 1 ms, latência do wrap (não remedido com o mecanismo atual) |
-| `constlat.conf` | sobre `n1-tag.conf`: M33 em constant latency (`CONFIG_SOC_NRF_FORCE_CONSTLAT`) |
-| `rram-standby.conf` | sobre `n1-tag.conf`: RRAM em standby em idle (`APP_RRAM_STANDBY`) |
+| `constlat.conf` | sobre `wrap-latency-tag.conf`: M33 em constant latency (`CONFIG_SOC_NRF_FORCE_CONSTLAT`, que exige `CONFIG_NRF_SYS_EVENT`; é a única configuração do repositório que o liga) |
+| `rram-standby.conf` | sobre `wrap-latency-tag.conf`: RRAM em standby em idle (`APP_RRAM_STANDBY`) |
 
 ## Compilação e gravação
 
@@ -127,8 +127,10 @@ Log por RTT: na Thingy:53 acrescentar `overlay-rtt.conf` ao
 
 No FLPR, o `sysbuild.cmake` substitui o `vpr_launcher` padrão pela imagem
 `hfxo_launcher` (`launcher/`), um app core mínimo que pede o HFXO e dorme.
-Sem isso o TIMER do FLPR roda do HFINT, cerca de 0,2 % fora (M, log não
-incluído).
+O build do FLPR precisa de `-DSB_CONFIG_VPR_LAUNCHER=n` na linha de
+comando, para o sysbuild não acrescentar também o `vpr_launcher` padrão
+(ver o Achado 8). Sem o `hfxo_launcher` o TIMER do FLPR roda do HFINT,
+cerca de 0,2 % fora (M, log não incluído).
 
 ## Teste
 
@@ -150,11 +152,11 @@ Varredura (mesma bancada):
 
 ```
 <inf> app: === sweep: period 40 us (25000.0 Hz) for 8 s
-<inf> app: === sweep result: period 40 us: xfers/s=25001 queued/s=402 fresh/s=402.0 skipped=172207 dropped=0 late_wraps=0 overflows=0 torn=0
-<inf> app: === latency (trigger -> wrap ISR): min=1.25 avg=1.62 max=2.12 us
+<inf> app: === sweep result: period 40 us: xfers/s=25005 queued/s=402 fresh/s=402.0 skipped=172234 dropped=0 late_wraps=0 overflows=0 torn=0
+<inf> app: === latency (trigger -> wrap ISR): min=1.12 avg=1.18 max=1.93 us
 <inf> app: === sweep: period 25 us (40000.0 Hz) for 8 s
-<inf> app: === sweep result: period 25 us: xfers/s=39992 queued/s=401 fresh/s=401.8 skipped=277152 dropped=0 late_wraps=0 overflows=0 torn=0
-<inf> app: === latency (trigger -> wrap ISR): min=1.25 avg=1.59 max=2.12 us
+<inf> app: === sweep result: period 25 us: xfers/s=40004 queued/s=402 fresh/s=402.0 skipped=277238 dropped=0 late_wraps=0 overflows=0 torn=0
+<inf> app: === latency (trigger -> wrap ISR): min=1.12 avg=1.18 max=1.93 us
 ```
 
 Cada passo descarta o primeiro segundo e imprime os totais dos seguintes.
@@ -162,9 +164,10 @@ Campos: `xfers` conta transações iniciadas; `late` no relatório por
 segundo e `late_wraps` no resultado da varredura são o mesmo contador, e
 `ovf` é `overflows`. `late_wraps` diferente de zero indica que um `START`
 entrou entre a limpeza do evento e a escrita do wrap: aquela transação
-usou o slot seguinte ao último e nada se perdeu (diagnóstico de wrap
-tardio). `overflows` diferente de zero indica que o EasyDMA chegou aos
-slots de guarda antes do wrap: T longo demais para `APP_RING_SLOTS`.
+usou o slot seguinte ao último, que não é entregue (uma amostra perdida
+por wrap tardio; nunca dado antigo na fila). `overflows` diferente de zero
+indica que o EasyDMA chegou aos slots de guarda antes do wrap: T longo
+demais para `APP_RING_SLOTS` (além da guarda a RAM corrompe sem aviso).
 `torn` (modo por amostra) conta amostras atropeladas pelo `START`
 seguinte durante a cópia. A linha de latência só aparece com
 `APP_WRAP_LATENCY_STATS`; no modo por amostra ela é `trigger -> sample
@@ -184,13 +187,13 @@ que com o filtro é igual ao `queued/s`); `test-logs/u_tag_timer_vs_odr.log`:
 
 | Período do timer | Transações/s | Amostras novas/s | Repetidas em 9 s (`skipped`) | Perde amostras? |
 |---|---|---|---|---|
-| 2500 µs (400/s) | 400 | 400,1 | 0 | **sim, cerca de 2/s, sem rastro** |
+| 2500 µs (400/s) | 400 | 399,7 | 0 | **sim, cerca de 2/s, sem rastro** |
 | 2475 µs (404/s) | 404 | 401,8 | 19 | não |
-| 2450 µs (408/s) | 408 | 401,8 | 56 | não |
-| 2425 µs (412/s) | 412 | 401,8 | 94 | não |
+| 2450 µs (408/s) | 408 | 402,1 | 56 | não |
+| 2425 µs (412/s) | 412 | 401,7 | 94 | não |
 | 2400 µs (416/s) | 416 | 401,7 | 133 | não |
-| 2350 µs (425/s) | 425 | 401,8 | 212 | não |
-| 2300 µs (434/s) | 434 | 401,7 | 296 | não |
+| 2350 µs (425/s) | 425 | 402,0 | 213 | não |
+| 2300 µs (434/s) | 434 | 402,0 | 296 | não |
 | 2200 µs (454/s) | 454 | 401,8 | 474 | não |
 
 Abaixo do ODR real o timer perde amostras em silêncio: o data-ready volta a
@@ -198,7 +201,7 @@ subir antes da próxima leitura. O critério de perda é `skipped = 0` com
 amostras novas/s abaixo do ODR real: o timer nunca leu uma repetida, logo
 perdeu amostras. A partir de 2475 µs aparecem repetidas (`skipped > 0`),
 prova de que o timer está à frente do sensor, e o `fresh` fica no ODR
-real (401,7–401,8/s, oscilando ±0,1 pela janela). O medido é 0,5 % acima
+real (401,7–402,1/s, oscilando ±0,2 pela janela). O medido é 0,5 % acima
 do ODR real (1 % do nominal) numa unidade; a regra de projeto é timer 5 a
 10 % acima do ODR nominal, para cobrir a tolerância do oscilador do
 sensor. O resultado não depende do mecanismo de entrega.
@@ -216,34 +219,36 @@ menor, e no nRF5340 a varredura não tem passo entre 14 e 12 µs.
 TAG M33, BMI270, 17 bytes a 8 MHz (`bench/bus-max-tag.conf`,
 `test-logs/u_tag_busmax.log`):
 
-| Período | Transações/s | fresh/s | late_wraps / overflows | Latência do wrap (mín. / média / máx.) | Dados |
+| Período | Transações/s | fresh/s | late_wraps / overflows | Latência do wrap (mín. / média / máx.) | Dados (Z mín.–máx. na janela do log) |
 |---|---|---|---|---|---|
-| 40 µs | 25 001 | 402 (= queued) | 0 / 0 | 1,25 / 1,62 / 2,12 µs (espera acordada) | válidos, Z 0,55–0,64 m/s² |
-| 25 µs | 39 992 | 402 | 0 / 0 | 1,25 / 1,59 / 2,12 µs | válidos |
-| 20 µs | 49 991 | 402 | 0 / 0 | 1,81 / 1,81 / 2,12 µs | válidos |
-| **19 µs** | **52 620** | 402 | 0 / 0 | 1,25 / 1,66 / 2,12 µs | válidos |
-| 18 / 17 / 16 µs | 55 549 / 58 826 / 62 496 | 546 / 227 / 453 (bit sem sentido) | 0 / 0 | 1,3–2,1 µs | **congelados**: Z mín. 0,55 = máx. 0,58; o `START` chega com a SPIM ocupada (17 µs + START + CSN ≈ 18,5 µs) |
+| 40 µs | 25 005 | 402 (= queued) | 0 / 0 | 1,12 / 1,18 / 1,93 µs (espera acordada) | válidos, 0,55–0,65 m/s² |
+| 25 µs | 40 004 | 402 | 0 / 0 | 1,12 / 1,18 / 1,93 µs | válidos, 0,54–0,63 |
+| 20 µs | 49 991 | 401,8 | 0 / 0 | 1,68 / 1,68 / 1,93 µs | válidos, 0,55–0,64 |
+| **19 µs** | **52 632** | 402 | 0 / 0 | 1,12 / 1,29 / 1,93 µs | válidos, 0,54–0,66 |
+| 18 / 17 / 16 µs | 55 549 / 58 816 / 62 490 | 364 / 454 / 453 (fora do ODR) | 0 / 0 | 1,1–1,9 µs | **não comprovados**: `fresh` sai do ODR e a faixa de Z estreita para 0,57–0,61 em todas as janelas, mas não congela de todo; o `START` chega com a SPIM ocupada (17 µs + START + CSN ≈ 18,5 µs) |
 
 Thingy:53 M33, ADXL362, 11 bytes a 8 MHz (`bench/bus-64k-thingy.conf`,
 `test-logs/u_thingy_bus64k.log`):
 
-| Período | Transações/s | fresh/s | late_wraps / overflows | Dados |
-|---|---|---|---|---|
-| 100 / 50 µs | 10 003 / 20 003 | 372 / 366 | 0 / 0 | válidos (ODR real ≈ 372) |
-| 25 / 20 / 16 µs | 40 013 / 50 026 / 62 513 | 547 / 393 / 481 | 0 / 0 | válidos (`fresh` acima do ODR real: o bit não é confiável neste espaçamento) |
-| 15 µs | 66 676 | 402 | 0 / 0 | válidos |
-| **14 µs** | **71 441** | 416 | 0 / 0 | válidos (Z variando) |
-| 12 / 11 / 10 µs | 83 330 / 90 934 / 100 035 | 306 / 303 / 303 (bit sem sentido) | 0 / 0 | **congelados**: Z = −7,29 fixo; o `START` durante a transação reinicia a SPIM e a rajada de 11 bytes nunca termina |
+| Período | Transações/s | fresh/s | late_wraps / overflows | Latência do wrap (mín. / média / máx.) | Dados (Z mín.–máx. na janela do log) |
+|---|---|---|---|---|---|
+| 100 µs | 10 003 | 372 | 0 / 0 | 1,75 / 2,10 / 10,87 µs (IRQ de idle: período ≥ 64 µs) | válidos (ODR real ≈ 372), −9,63 a −6,35 m/s² |
+| 50 µs | 20 004 | 367 | 0 / 0 | 1,56 / 1,70 / 2,18 µs (espera acordada) | válidos, −9,36 a −6,44 |
+| 25 / 20 / 16 µs | 40 006 / 50 010 / 62 504 | 544 / 407 / 487 | 0 / 0 | 1,56 / 1,69–1,71 / 2,06–2,12 µs | válidos (`fresh` acima do ODR real: o bit é lido duas vezes neste espaçamento), −10,69 a −4,88 |
+| 15 µs | 66 694 | 400 | 0 / 0 | 1,56 / 1,72 / 2,12 µs | válidos, −9,68 a −6,02 |
+| **14 µs** | **71 426** | 388 | 0 / 0 | 1,56 / 1,72 / 2,12 µs | válidos, −9,32 a −5,97 |
+| 12 / 11 / 10 µs | 83 324 / 90 927 / 99 989 | 607 / 607 / 607 (bit sem sentido) | 0 / 0 | 1,56 / 1,71 / 2,06–2,12 µs | **congelados**: Z mín. −8,44 e máx. −6,89 idênticos em todas as janelas dos três passos; o `START` durante a transação reinicia a SPIM e a rajada de 11 bytes nunca termina |
 
 O teto real é o barramento: 11 bytes + `START` + CSN ≈ 12,5 µs, e 14 µs é o
 último período com dados válidos (71,4 k/s; o teto real está entre 71,4 e
 83 k/s). O wrap do anel não limita: a ISR escreve o ponteiro logo após
 `READY`/`STARTED` e tem um período de prazo, até o próximo `START` (ver
-Achados). Nestes benches todas as transações estão a menos de 64 µs, então
-a thread espera o wrap acordada em todos os passos e a latência fica em
-1,25–2,12 µs. Com `queued/s = fresh/s` exato em todos os passos (antes da
-correção do Achado 8 do `gpiote_dppi_spim`, `queued` passava `fresh` em
-1 a 5/s). O teto no FLPR não foi medido com o mecanismo atual.
+Achados). No passo de 100 µs a IRQ de wrap vem de idle e mostra o wake-up
+do nRF5340: 10,87 µs de máximo (M). Nos passos de 50 µs para baixo a
+thread espera o wrap acordada e a latência fica em 1,56–2,18 µs. Com
+`queued/s = fresh/s` exato em todos os passos (antes da correção do
+Achado 8 do `gpiote_dppi_spim`, `queued` passava `fresh` em 1 a 5/s). O
+teto no FLPR não foi medido com o mecanismo atual.
 
 ### Modo por amostra: até onde vale
 
@@ -258,50 +263,56 @@ que inclui os 18,5 µs da transação):
 | Período | Transações/s | fresh/s (= queued) | torn | Latência (mín. / média / máx.) | Leitura |
 |---|---|---|---|---|---|
 | 1000 µs | 1 000 | 402 | 0 | 19,68 / 25,74 / 35,00 µs | core dorme entre amostras: a ISR paga a RRAM (até 16,5 µs) |
-| 500 / 250 / 100 µs | 2 000 / 4 000 / 10 002 | 402 | 0 | 19,68 / 22,71–20,29 / 34,8 µs | idem, média cai porque o core dorme menos |
-| 50 / 40 µs | 19 993 / 25 002 | 401,8 / 402 | 0 | 19,68 / 19,99–19,92 / 34,75 µs | ainda há idle entre amostras (máx. 34,75) |
-| 30 / 25 µs | 33 335 / 40 000 | 402 | 0 | ≈ 19,6–19,8 µs de média, 27,4 / 22,8 máx. | o core não chega a dormir; ISR ≈ 1,2 µs |
-| 20 µs | 49 994 | 3 | **247 706 em 5 s** | — | a cópia é atropelada pelo `START` seguinte (1,5 µs de folga) |
-| 19 µs | 52 636 | 402 | 0 | 0,68 / 0,76 / 9,81 µs (módulo o período) | **falso limpo**: a ISR entra 0,7 µs depois do `START` seguinte; a rajada copiada mistura duas transações e o bit `fresh` é o da nova. Não detectável pelo engine |
+| 500 / 250 / 100 µs | 2 000 / 4 000 / 10 001 | 402 | 0 | 19,68 / 22,71–20,29 / 34,75–34,81 µs | idem, média cai porque o core dorme menos |
+| 50 / 40 µs | 20 002 / 25 002 | 402 | 0 | 19,68 / 19,99–19,92 / 34,75 µs | ainda há idle entre amostras (máx. 34,75); **último período limpo comprovado: 40 µs (25 k/s)** |
+| 30 / 25 µs | 33 337 / 40 006 | 402 | 0 | 0,06 / 19,77 / 27,37 e 9,68 / 19,59 / 22,81 µs | **falso limpo**: mínimos abaixo dos 18,5 µs da transação só são possíveis módulo o período, ou seja, algumas ISRs entraram depois do `START` seguinte; contadores limpos, dados possivelmente misturados |
+| 20 µs | 49 994 | 2,8 | **247 716 em 5 s** | 0,00 / 19,58 / 19,93 µs | a cópia é atropelada pelo `START` seguinte (1,5 µs de folga) |
+| 19 µs | 52 639 | 402 | 0 | 0,68 / 0,76 / 9,81 µs (módulo o período) | **falso limpo**: a ISR entra 0,7 µs depois do `START` seguinte em todas; a rajada copiada mistura duas transações e o bit `fresh` é o da nova. Não detectável pelo engine |
 
 Thingy:53 M33, ADXL362, 11 bytes a 8 MHz (`bench/per-sample-thingy.conf`,
-`test-logs/u_thingy_persample_sweep.log`):
+`test-logs/u_thingy_persample_sweep.log`; latência = trigger → ISR de
+`END`, que inclui os 12,5 µs da transação):
 
-| Período | Transações/s | fresh/s | torn | Leitura |
-|---|---|---|---|---|
-| 1000 / 100 µs | 1 000 / 9 999 | 371,6 / 372,8 | 0 | limpo (ODR real ≈ 372) |
-| 50 µs | 20 005 | 302 | 0 | perde ~19 % das amostras novas: a ISR entra depois do `START` seguinte (12,5 µs de transação + 14–25 µs de wake-up + cópia > 50 µs às vezes), não detectável |
-| 25 µs | 40 011 | 103,8 | 132 833 | 60 % das cópias atropeladas |
-| 20 µs e abaixo | 0 | 0 | — | o core não acompanha; o engine para |
+| Período | Transações/s | fresh/s | torn (em 5 s) | Latência (mín. / média / máx.) | Leitura |
+|---|---|---|---|---|---|
+| 1000 / 250 / 100 µs | 1 000 / 4 001 / 9 999 | 371,6 / 371,6 / 372,0 | 0 | 13,9–14,1 / 14,2 / 14,8, 14,4 e 25,3 µs | limpo (ODR real ≈ 372); 12,5 de transação + ≈ 1,5 de ISR; a 100 µs aparece o wake-up (25,3) |
+| 50 µs | 19 997 | 367 | 0 | 13,87 / 14,34 / 37,12 µs | −1,3 % de amostras novas: a ISR entra às vezes depois do `START` seguinte (12,5 + até 23 µs de wake-up + cópia), não detectável |
+| 40 µs | 25 005 | 352 | 0 | 13,62 / 14,55 / 36,18 µs | −5 %, mesmo mecanismo |
+| 30 / 25 µs | 33 331 / 40 002 | 536 / 546 | 3 / 10 | 0,06 e 0,12 de mínimo (módulo o período) | `fresh` acima do ODR (bit lido duas vezes) e as primeiras cópias atropeladas |
+| 20 µs | 49 792 | 259 | 0 | 0,25 / 14,47 / 17,56 µs | metade das amostras novas some sem `torn`: a ISR entra depois do `START` seguinte |
+| 16 / 15 / 14 µs | 62 222 / 66 135 / 70 819 | 94 / 171 / 269 | 151 764 / 193 766 / 154 | 0,00 de mínimo | 61 %, 59 % e 0,04 % das cópias atropeladas; a 14 µs a ISR quase sempre entra já na transação seguinte |
 
-Regra que sai daqui: o modo por amostra vale enquanto período > transação
-+ wake-up de idle (≈ 16,5 µs no M33 do nRF54L15, > 25 µs no nRF5340) +
-2 µs. Na TAG isso dá ≈ 37 µs (27 k/s) com margem, e o medido foi limpo
-até 25 µs (40 k/s) porque a essa taxa o core nunca dorme; no nRF5340 dá ≈
-40 µs e o medido foi limpo até 100 µs (10 k/s) e com perdas a 50 µs. Acima
-disso, modo drenado.
+Regra que sai daqui, em três números: (1) garantia: período > transação +
+wake-up máximo de idle (≈ 16,5 µs no M33 do nRF54L15, ≈ 23 µs no nRF5340)
++ 2 µs, ou seja, ≈ 37 µs (27 k/s) na TAG e ≈ 38 µs (26 k/s) na Thingy;
+(2) medido limpo: 40 µs (25 k/s) na TAG e 100 µs (10 k/s) na Thingy, com
+−1 % a 50 µs; (3) consumo: custa menos que o modo drenado com T = período
+até ≈ 12 k/s (E, `docs/POWER.md`). O primeiro sintoma de excesso não é
+`torn`, é a latência mínima abaixo da transação. Acima do limite, modo
+drenado.
 
 ### Latência de uma IRQ saindo de idle (M33)
 
-`bench/n1-tag.conf` com `APP_WRAP_LATENCY_STATS`, modo drenado com T =
-1 ms, sem filtro: latência do `COMPARE` do trigger até a ISR de wrap
-(inclui DPPI → `START` → `DMA.RX.READY` → IRQ), uma vez por volta do anel
-(`test-logs/u_tag_wrap_latency.log`):
+`bench/wrap-latency-tag.conf` com `APP_WRAP_LATENCY_STATS`, modo drenado
+com T = 1 ms, sem filtro: latência do `COMPARE` do trigger até a ISR de
+wrap (inclui DPPI → `START` → `DMA.RX.READY` → IRQ), uma vez por volta do
+anel (`test-logs/u_tag_wrap_latency.log`):
 
 | Período | Caminho | Latência (mín. / média / máx.) |
 |---|---|---|
-| 1000 µs | IRQ de idle | 1,31 / 15,44 / 16,25 µs |
-| 500 µs | IRQ de idle | 1,31 / 14,41 / 16,25 µs |
-| 250 µs | IRQ de idle | 1,31 / 14,53 / 16,25 µs |
-| 100 µs | IRQ de idle | 1,25 / 8,51 / 16,25 µs (às vezes o core ainda está acordado) |
-| 50 µs | espera acordada (< 64 µs) | 1,62 / 1,81 / 1,87 µs |
-| 40 / 30 / 25 / 20 µs | espera acordada | 1,25–1,81 / 1,27–1,81 / 1,81–1,87 µs |
+| 1000 µs | IRQ de idle | 16,12 / 16,14 / 16,50 µs |
+| 500 µs | IRQ de idle | 3,37 / 15,56 / 16,50 µs |
+| 250 µs | IRQ de idle | 7,43 / 15,81 / 16,50 µs |
+| 100 µs | IRQ de idle | 1,25 / 9,50 / 16,18 µs (às vezes o core ainda está acordado) |
+| 50 µs | espera acordada (< 64 µs) | 1,81 / 1,87 / 2,12 µs |
+| 40 / 30 / 25 / 20 µs | espera acordada | 1,25–1,81 / 1,28–1,90 / 2,06–2,12 µs |
 
-`late_wraps = 0` e `overflows = 0` em todos os passos, `queued/s =
-xfers/s` (sem filtro). Os 16,25 µs de máximo são a RRAM em power-down
-(Achado 2). Com o mecanismo anterior (uma IRQ por amostra, log não
-incluído) mediram-se 16,8 µs no M33 padrão, 2,75 µs com RRAM em standby e
-2,43 µs no FLPR, pela mesma cadeia; esses dois últimos não foram remedidos.
+`late_wraps = 0` e `overflows = 0` em todos os passos, `queued/s ≈
+xfers/s` (sem filtro; diferem por poucas unidades pela borda da janela).
+Os 16,5 µs de máximo são a RRAM em power-down (Achado 2). Com o mecanismo
+anterior (uma IRQ por amostra, log não incluído) mediram-se 16,8 µs no M33
+padrão (o mesmo com constant latency), 2,75 µs com RRAM em standby e
+2,43 µs no FLPR, pela mesma cadeia; esses não foram remedidos.
 Interpretação completa no
 [README da raiz](../README.md#prazo-do-wrap--wake-up-do-core).
 
@@ -319,7 +330,7 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
   na ISR de `END`;
 - com `APP_WRAP_LATENCY_STATS` o TIMER roda a 16 MHz e a ISR de wrap (ou
   a de `END`, no modo por amostra) captura o tempo desde o `COMPARE`
-  (`CC1`); com `APP_COUNT_STARTED` o wrap usa a IRQ de `STARTED`; com
+  (`CC1`); com `APP_WRAP_ON_STARTED` o wrap usa a IRQ de `STARTED`; com
   `APP_RRAM_STANDBY` o `RRAMC` fica em standby;
 - `src/main.c` traz o `run_sweep()` da bancada.
 
@@ -328,12 +339,12 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
 1. **HFXO**: sem o pedido, o TIMER roda do HFINT, cerca de 0,2 % fora (M,
    log não incluído). O FLPR não tem clock control no NCS 3.4.1, por isso
    o `hfxo_launcher`.
-2. **Latência de 14–16 µs do M33 em idle = wake-up da RRAM.** Com o core
+2. **Latência de ≈ 16 µs do M33 em idle = wake-up da RRAM.** Com o core
    em idle a RRAM entra em power-down (padrão do `RRAMC`) e a primeira
-   instrução da ISR espera `tIDLE2CPU` = 13 µs (D). Medido: 14,4–15,4 µs
-   de média e 16,25 de máximo até a ISR de wrap (M,
-   `u_tag_wrap_latency.log`) = 13 µs de RRAM (D) + ~2 µs de DPPI, IRQ e
-   entrada da ISR; com o core acordado, 1,25–1,87 µs. Com o mecanismo
+   instrução da ISR espera `tIDLE2CPU` = 13 µs (D). Medido: 16,1 µs de
+   média e 16,5 de máximo até a ISR de wrap a 1 000 µs de período (M,
+   `u_tag_wrap_latency.log`) = 13 µs de RRAM (D) + ~3 µs de DPPI, IRQ e
+   entrada da ISR; com o core acordado, 1,25–2,12 µs. Com o mecanismo
    anterior: constant latency sozinho não resolve; RRAM em standby
    (`APP_RRAM_STANDBY`) dá 2,75 µs constantes; o FLPR roda da RAM, 2,43 µs
    sem configurar nada (M, log não incluído). Importa para qualquer ISR
@@ -347,9 +358,12 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
    `late_wraps` por passo entre 25 e 14 µs de período na Thingy:53 (M,
    execução anterior, log não incluído). Com a espera acordada
    (`APP_WRAP_AWAKE_BELOW_US`) foram zero em todos os passos, dados
-   válidos até 14 µs (M, `u_thingy_bus64k.log`). O mesmo wake-up limita o
-   modo por amostra no nRF5340 a ~10 k/s (M, `u_thingy_persample_sweep.log`).
-   A latência de wake-up do nRF5340 não foi medida em separado.
+   válidos até 14 µs (M, `u_thingy_bus64k.log`). Medido agora com
+   `APP_WRAP_LATENCY_STATS`: a IRQ de wrap vinda de idle (passo de
+   100 µs) entra em 10,87 µs no máximo, e a ISR de `END` do modo por
+   amostra em até 37,12 µs a 50 µs de período, ou seja, ≈ 23 µs além da
+   transação (M, `u_thingy_persample_sweep.log`). É esse wake-up que
+   limita o modo por amostra no nRF5340 a ~10 k/s.
 4. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
    (nRF54L), nunca após `END`**. No nRF54L o `DMA.RX.READY` é o evento que o
    datasheet define para isso ("EasyDMA armazenou .PTR e .MAXCNT, permitindo
@@ -377,10 +391,12 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
 6. **O modo por amostra tem um limite invisível.** A ISR de `END` detecta
    um `START` que chega durante a cópia (`torn`), mas não um que chega
    antes de ela entrar: a rajada copiada mistura duas transações e o bit
-   `fresh` é o da nova. Na TAG isso aparece a 19 µs (`torn` 0, `fresh`
-   402, latência de 0,7 µs módulo o período); na Thingy a 50 µs (`fresh`
-   302 para 372). O critério é a latência máxima da ISR mais a transação
-   caberem no período, não o contador.
+   `fresh` é o da nova. Na TAG isso aparece já a 30 e 25 µs (latência
+   mínima de 0,06 e 9,7 µs, abaixo da transação, com contadores limpos) e
+   de forma completa a 19 µs (`torn` 0, `fresh` 402, latência de 0,7 µs
+   módulo o período); na Thingy a 50 e 40 µs (`fresh` 367 e 352 para
+   372). O critério é a latência máxima da ISR mais a transação caberem no
+   período, e o sintoma é a latência mínima, não o contador.
 7. **Log deferred trava na varredura**: a bancada usa `LOG_MODE_IMMEDIATE`,
    `LOG_BACKEND_RTT_MODE_DROP` e pilha do log em 2048 bytes.
 8. **Sysbuild**: `-D<imagem>_CONFIG_X=y` só para símbolos Kconfig; um Kconfig

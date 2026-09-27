@@ -69,43 +69,48 @@ Termos do sensor e do barramento SPI:
 | amostra | um valor do sensor (X, Y, Z); "amostra nova" = data-ready ativo na rajada |
 | rajada | os bytes de uma transação: comando + `STATUS` + dados (11 B no ADXL362, 17 B no BMI270) |
 | período | intervalo entre dois `START` consecutivos (1/ODR no caso 1, período do timer no caso 2) |
-| ODR | *output data rate*, taxa de saída do sensor; "nominal" é a configurada, "real" é a medida (tolerância do oscilador do sensor) |
+| ODR | *output data rate*, taxa de saída do sensor; "nominal" é a configurada, "real" é a medida (401,8/s para 400 Hz no BMI270 da bancada, ≈ 372/s para 400 Hz no ADXL362). A diferença é a tolerância do oscilador interno do sensor, que o datasheet de cada um declara; não está especificada aqui |
 | data-ready | pino do sensor que sinaliza "amostra nova". Pode ser **nível** (fica ativo até os dados serem lidos: ADXL362, BMI270 no modo *non-latched* usado aqui), **pulso** (alguns µs) ou *latched* (fica ativo até um registrador ser lido). Saída push-pull, ativo alto nos dois sensores da bancada. O disparo por GPIOTE é por borda, então o modo importa (ver "Partida e parada") |
 | `STATUS`, bit DRDY | registrador de status do sensor, lido no início de cada rajada; o bit *data ready* (`STATUS.DRDY` no BMI270, `STATUS.DATA_READY` no ADXL362) diz se os dados que seguem são novos. É a origem do campo `fresh` |
 | primeiro byte da rajada | nos sensores SPI o primeiro byte carrega o endereço, um bit de leitura/escrita e às vezes o auto-incremento: BMI270 `0x83` = endereço 0x03 com o bit 7 (leitura) em 1; ADXL362 `0x0B` = comando "read register"; ADXL382 `0x23` = `(0x11 << 1) \| 1`. Importa porque a errata 8 do nRF54L só atinge comandos com o bit mais significativo em 1 |
-| byte dummy | o BMI270 devolve um byte inválido depois do endereço em SPI; a rajada dele é 1 + 1 + 15 = 17 B para 1 + 10 = 11 B do ADXL362 (comando, `STATUS`, 3 eixos × 2 B, mais temperatura no BMI270) |
+| byte dummy | o BMI270 devolve um byte inválido depois do endereço em SPI. A rajada dele (`sensor_bmi270.c`) é 1 byte de endereço (`0x83`) + 1 dummy + 15 registradores contíguos, `STATUS` (0x03), 8 B de dados auxiliares (0x04–0x0B) e 6 B de aceleração X/Y/Z (0x0C–0x11) = 17 B. A do ADXL362 (`sensor_adxl362.c`) é comando `0x0B` + endereço + `STATUS` + `FIFO_ENTRIES` L/H + 6 B de X/Y/Z = 11 B |
+| `FIFO_ENTRIES` | dois registradores do ADXL362 (0x0C, 0x0D) que ficam entre o `STATUS` e os dados e por isso vão na rajada; não são usados |
+| leitura dummy do BMI270 | depois de um reset o BMI270 volta a I²C; a primeira leitura por SPI (`CHIP_ID`) só serve para trocar a interface e o valor é descartado (`sensor_bmi270.c`) |
+| `adv_pwr_save` | modo de economia do BMI270 que exige 1 ms entre escritas; o init o desliga antes de carregar a configuração e o deixa desligado (modo de desempenho contínuo) |
 | FIFO, *watermark* | buffer interno do sensor que acumula amostras e interrompe quando atinge um nível (*watermark*). É a alternativa clássica para ODR alto: uma transação longa por bloco em vez de uma por amostra. Não coberta por este repositório |
-| *config file* do BMI270 | o BMI270 precisa receber ~8 KB de configuração por SPI na inicialização (`sensor_bmi270.c`); é o motivo de o init dele demorar e de a fase bloqueante existir |
+| *config file* do BMI270 | o BMI270 precisa receber um blob de configuração por SPI depois de cada power-on antes de medir; o backend usa o `max_fifo` do driver do Zephyr, 328 bytes em 11 blocos, 23 ms (M, log). É o motivo de a fase bloqueante existir |
+| modo repetido, `HOLD_XFER`, `REPEATED_XFER` | flags da nrfx: a transferência é preparada (`HOLD_XFER`: sem disparar o `START`) e fica armada para se repetir a cada `START` (`REPEATED_XFER`), com `NO_XFER_EVT_HANDLER` (o driver não trata o fim) e, no modo drenado, `RX_POSTINC` (array list) |
+| ZLI | *zero-latency interrupt* do Zephyr: IRQ que passa por cima do kernel. Versões anteriores usavam uma para o wrap; nenhuma é usada agora |
 | mg/LSB, faixa | escala do valor bruto: com faixa ±2 g o BMI270 dá 16 384 LSB/g e o ADXL362 1 mg/LSB; `decode()` converte para m/s² |
 | CPOL, CPHA, modos SPI | polaridade e fase do clock: modo 0 = CPOL 0/CPHA 0 (os dois sensores aqui), modo 3 = CPOL 1/CPHA 1 (o BMI270 também aceita). A errata 8 do nRF54L depende de CPHA |
 | `CSNDUR` | `IFTIMING.CSNDUR`: tempo entre CSN e SCK e tempo mínimo de CSN inativo, em ciclos do clock do core da SPIM: 16 MHz nas SPIM2x/30, 128 MHz na SPIM00 (D); no nRF5340, em ciclos de 64 MHz (15,6 ns, D) |
 | `RXDELAY` | `IFTIMING.RXDELAY`: atraso da amostragem do MISO, em ciclos do clock do core da SPIM no nRF54L (16 MHz nas SPIM2x) e de 64 MHz no nRF5340 (Achado 3 do `gpiote_dppi_spim`) |
 | `PRESCALER` | divisor do clock do core da SPIM que gera o SCK no nRF54L: 16 MHz / 2 = 8 MHz nas SPIM2x; 128 MHz / 4 = 32 MHz na SPIM00 |
 | errata 8 | nRF54L: com CPHA = 0, `PRESCALER > 2` e primeiro bit do comando em 1, o MOSI sai errado; o workaround da nrfx precisa de uma escrita por transação, impossível com DPPI. Saída: 8 MHz nas SPIM2x, ou comando com MSB 0, ou CPHA = 1 |
-| 1,5 µs | custo fixo por transação na fórmula t = bytes × 8 / SCK + 1,5 µs: `START` até o primeiro SCK mais CSN. Inferido do teto (19 µs passa, 18 µs falha, com 17 µs de bits): E, não M. `CSNDUR` maior acrescenta ciclos do clock do core da SPIM |
+| 1,5 µs | custo fixo por transação na fórmula t = bytes × 8 / SCK + 1,5 µs: `START` até o primeiro SCK mais CSN. Inferido do teto (19 µs passa, 18 µs não comprovado, com 17 µs de bits): E, não M. `CSNDUR` maior acrescenta ciclos do clock do core da SPIM |
 
 Termos do engine e do log:
 
 | Termo | Significado neste repositório |
 |---|---|
-| modo drenado | entrega padrão: o EasyDMA enche um anel e uma thread acorda a cada T para passar as amostras à fila. Latência de entrega ≤ T (mais o tick do kernel e o tempo da drenagem); a CPU entra 1/T vezes por segundo mais uma IRQ de wrap por volta do anel |
+| modo drenado | entrega padrão: o EasyDMA enche um anel e uma thread acorda a cada T para passar as amostras à fila. Latência de entrega ≤ T real (ver T) em taxa baixa; em taxa alta a amostra mais nova fica para a drenagem seguinte. A CPU entra 1/T vezes por segundo mais uma IRQ de wrap por volta do anel |
 | modo por amostra | `APP_PER_SAMPLE_IRQ`: um único buffer em vez do anel; a interrupção `END` da SPIM copia cada rajada para a fila assim que a transação termina. Latência = entrada da ISR + cópia; uma interrupção por amostra. Vale enquanto o período for maior que a transação mais a latência da ISR |
-| T, período de drenagem | `APP_DRAIN_PERIOD_US` (10 ms por padrão, mínimo 100 µs): intervalo em que a thread de drenagem acorda no modo drenado. O período real é T mais o tempo da drenagem (o `k_sleep` vem depois do trabalho) arredondado ao tick do kernel (32 µs no nRF54L15, 30,5 µs no nRF5340) |
-| drenagem | o que a thread faz a cada T: lê o head, entrega à fila os slots completos, e arma o wrap quando o anel passou da metade |
+| T, período de drenagem | `APP_DRAIN_PERIOD_US` (10 ms por padrão, mínimo 100 µs): intervalo em que a thread de drenagem acorda no modo drenado. **T real** = T arredondado para cima ao tick do kernel mais um tick (`k_sleep`; 32 µs por tick no nRF54L15, 30,5 µs no nRF5340) mais o tempo da drenagem (o `k_sleep` vem depois do trabalho): 10 ms → 10,05 ms, 1 ms → 1,06 ms, 625 µs → 672 µs, 100 µs → 160 µs no nRF54L15 |
+| drenagem | o que a thread faz a cada T: lê o head, entrega à fila os slots completos, e arma o wrap quando o anel passou da metade. Com até 4 slots pendentes ela espera um tempo de transação (`XFER_SETTLE_US`, ≈ 21 µs para 17 B, ≈ 15 µs para 11 B a 8 MHz) e, se nenhum `START` novo apareceu, entrega também o slot head − 1: em taxa baixa a última amostra não fica retida até a transação seguinte |
 | slot | espaço de uma rajada no anel |
-| anel | buffer de `APP_RING_SLOTS` slots (256 por padrão) mais 8 slots de guarda. Precisa caber duas drenagens de amostras (≥ 2 × taxa × T). RAM = (slots + 8) × bytes da rajada |
+| anel | buffer de `APP_RING_SLOTS` slots (256 por padrão) mais 8 slots de guarda. Precisa caber duas drenagens de amostras (≥ 2 × taxa × T real). Os 8 slots de guarda só tornam um estouro visível (`ovf`): além deles o EasyDMA escreve fora do array, corrompe a RAM e nada detecta. RAM = (slots + 8) × bytes da rajada |
 | volta (*lap*) | uma passagem do EasyDMA pelo anel, do slot 0 até o wrap. Tem entre metade do anel e o anel inteiro de comprimento |
-| head, tail | head = índice do slot que o EasyDMA vai escrever em seguida, lido de `DMA.RX.PTR` (`RXD.PTR` no nRF5340); o slot head − 1 pode estar em curso. tail = próximo slot a entregar |
+| head, tail | head = índice do slot que o EasyDMA vai escrever em seguida, lido de `DMA.RX.PTR` (`RXD.PTR` no nRF5340); o slot head − 1 pode estar em curso (o ponteiro conta transações iniciadas, não terminadas). tail = próximo slot a entregar |
 | array list | modo do EasyDMA em que o ponteiro avança um slot por transação sem CPU (`RX_POSTINC` na nrfx) |
 | wrap | devolver o ponteiro ao slot 0. Feito na ISR do evento `DMA.RX.READY` (`STARTED` no nRF5340), que a drenagem habilita uma vez quando o head passa da metade do anel |
 | prazo do wrap | tempo que a ISR tem para escrever o ponteiro: do `READY` da transação que acabou de começar até o próximo `START`, ou seja, um período. "Margem" é sempre tempo |
-| espera acordada | `APP_WRAP_AWAKE_BELOW_US` (64 µs por padrão): quando as amostras da última drenagem estavam mais próximas que isso, a thread não dorme depois de armar o wrap: espera por ele acordada, no máximo T/4 ou 8 períodos + 8 µs. Evita que a IRQ de wrap pague o wake-up de idle (17 µs no M33 do nRF54L15, mais que isso no nRF5340) dentro de um período curto |
-| `late_wraps` (`late` no log) | wraps em que um `START` entrou entre a limpeza do evento e a escrita do ponteiro: aquela transação usou o slot seguinte ao último e o slot 0 ficou para a próxima. A amostra não se perde (o slot seguinte entra na volta); o contador é só o diagnóstico de que o wrap chegou tarde |
-| `overflows` (`ovf` no log) | voltas em que o EasyDMA chegou aos 8 slots de guarda antes do wrap: anel pequeno demais para T; os slots de guarda absorvem a escrita |
+| espera acordada | `APP_WRAP_AWAKE_BELOW_US` (64 µs por padrão): quando as amostras da última drenagem estavam mais próximas que isso, a thread não dorme depois de armar o wrap: espera por ele acordada, no máximo min(T/4, 8 períodos + 8 µs), isto é, no máximo ≈ 520 µs. Evita que a IRQ de wrap pague o wake-up de idle (16 µs no M33 do nRF54L15, ≈ 11 µs no nRF5340, M) dentro de um período curto. Enquanto espera, a thread cooperativa bloqueia as threads preemptíveis |
+| `late_wraps` (`late` no log) | wraps em que um `START` entrou entre a limpeza do evento e a escrita do ponteiro: aquela transação usou o slot seguinte ao último e o slot 0 ficou para a próxima. A ISR não sabe se o `START` veio antes ou depois de ela ler o head, então esse slot não é entregue: um wrap tardio custa **uma amostra**, contada aqui, e nunca entrega dado antigo |
+| `overflows` (`ovf` no log) | voltas em que o EasyDMA chegou aos 8 slots de guarda antes do wrap: anel pequeno demais para T real. A guarda só torna o estouro visível; um atraso maior que 8 transações além do anel corrompe a RAM sem aviso |
 | `torn` | modo por amostra: amostras cuja cópia foi atropelada pelo `START` da transação seguinte (detectado pelo evento `READY`); descartadas |
 | `fresh` | bit de data-ready lido no `STATUS` da própria rajada. Heurístico: com leituras espaçadas menos de ~100 µs (M, ADXL362; depende do sensor) o sensor ainda não limpou o bit |
 | `queued`, `dropped`, `skipped` | amostras que passaram pela fila no período (postas pelo engine e lidas pelo consumidor, iguais quando `dropped = 0`); que não couberam na fila; descartadas como repetidas pelo filtro (caso 2) |
-| `xfers` | transações iniciadas desde a partida: no modo drenado, voltas completas + head (exato, sem contador em hardware); no modo por amostra, interrupções `END` atendidas |
+| `xfers` | transações iniciadas desde a partida: no modo drenado, voltas completas + head (exato, sem contador em hardware, descontando os slots pulados em `late_wraps`); no modo por amostra, interrupções `END` atendidas (iguais às transações enquanto a ISR não atrasa) |
 | `STARTED` / `DMA.RX.READY` | evento de início de transação: `STARTED` no nRF5340, `DMA.RX.READY` no nRF54L (a nrfx o chama `RXSTARTED`). É o instante em que o hardware liberou o ponteiro para a próxima escrita; no modo drenado é a única IRQ da SPIM usada, e só quando armada |
 | DPPI, EEP → TEP, GPPI | interconexão de periféricos: um evento (EEP) publica num canal e uma tarefa (TEP) assina o canal. GPPI é a camada da nrfx que aloca canais e, no nRF54L15, as pontes PPIB entre domínios |
 | MCU / PERI / LP | domínios de potência do nRF54L15: SPIM00 e TIMER00 em MCU; SPIM2x, TIMER2x e GPIOTE20 em PERI; SPIM30 e GPIOTE30 em LP |
@@ -116,7 +121,7 @@ Termos do engine e do log:
 | FLPR / VPR | coprocessador RISC-V do nRF54L15, executa da RAM; VPR é o bloco de hardware que o contém |
 | `hfxo_launcher` | imagem do app core que sobe o FLPR e pede o HFXO; substitui o `vpr_launcher` padrão no exemplo TIMER |
 | HFXO / HFINT | cristal de 32 MHz e oscilador RC interno de alta frequência; um TIMER só é exato no HFXO (o HFINT desvia ~0,2 %, M, log não incluído) |
-| constant latency | sub-modo de potência do nRF54L15 que mantém recursos ligados em idle; 0,55 mA (D) e, medido com o mecanismo anterior, não corrige a latência da ISR sozinho |
+| constant latency | sub-modo de potência do nRF54L15 que mantém recursos ligados em idle; 0,55 mA (D) e, medido com o mecanismo anterior (log não incluído), não corrige a latência da ISR sozinho. Só a bancada `constlat.conf` o liga (com `CONFIG_NRF_SYS_EVENT`) |
 | CSN | chip select, aqui gerado pela SPIM (`PSEL.CSN`), não por GPIO |
 | TAG | nRF54L15 TAG, placa pública da Nordic (Zephyr `nrf54l15tag`) com BMI270 na SPIM22; sem UART, log por RTT |
 | PPK2 | Power Profiler Kit II da Nordic, o medidor de corrente que faltou nesta bancada: todo consumo aqui é modelo (E) |
@@ -150,29 +155,32 @@ entra por barramento.**
    interrupção por amostra por uma por bloco, mas exige um driver de FIFO
    por sensor e não dá a latência de uma amostra.
 2. **Como a CPU recebe as amostras.** Modo drenado (padrão) com T = 10 ms:
-   a thread acorda 100 vezes por segundo, latência de entrega de 10 ms,
+   a thread acorda 100 vezes por segundo, latência de entrega de ≈ 10 ms,
    anel de 256 slots suficiente até ~12 k/s (a 16 k e 50 k/s usa-se T =
    1 ms, ver [Consumo](#consumo--resumo)). Modo drenado com T ≈ período do
-   sensor: latência de até uma amostra (mais o tick do kernel), uma
-   drenagem por amostra; o Kconfig limita T a 100 µs. Modo por amostra
-   (`APP_PER_SAMPLE_IRQ`): latência de uma ISR (≈ 1,2 µs com o core
-   acordado, até 16,5 µs saindo de idle no M33 do nRF54L15, M), uma
+   sensor: latência de até um T real (625 µs viram 672 µs), uma
+   drenagem por amostra; o Kconfig limita T a 100 µs (160 µs reais). Modo
+   por amostra (`APP_PER_SAMPLE_IRQ`): latência de uma ISR (≈ 1,2 µs com o
+   core acordado, até 16,5 µs saindo de idle no M33 do nRF54L15, M), uma
    interrupção por amostra, válido enquanto o período for maior que a
-   transação mais essa latência: medido limpo até 40 k/s no nRF54L15 e até
-   10 k/s no nRF5340 (M). Consumo (E, 1 600/s, SPIM22): 49 µA drenado com
-   T = 10 ms, 135 µA drenado com T = 625 µs, 122 µA por amostra.
+   transação mais essa latência mais a cópia: garantido até 40 µs de
+   período (25 k/s) no nRF54L15 e até 100 µs (10 k/s) no nRF5340 (M).
+   Consumo (E, 1 600/s, SPIM22): 49 µA drenado com T = 10 ms, 186 µA
+   drenado com T = 625 µs, 122 µA por amostra.
 3. **Onde roda**, quando importa: SoC, instância da SPIM (no nRF54L15
    SPIM2x, ou SPIM00 se o barramento não couber a 8 MHz) e core (Cortex-M33
    ou FLPR). Pesa no consumo da SPIM00 (+300 µA, E) e na arquitetura (o
    FLPR livra o M33). Não pesa no prazo do wrap: a espera acordada tira o
-   wake-up do core do caminho nas taxas altas.
+   wake-up do core do caminho nas taxas altas, nos dois SoCs (M).
 
 **Consumo em três linhas (nRF54L15, caso 1, SPIM22, 11 B, E; tabela em
 [Consumo](#consumo--resumo)):** drenado com T = 10 ms custa 49 µA a
-1 600/s; drenado com T = 1 ms custa 297 µA a 16 k/s e 711 µA a 50 k/s.
-Drenado com T = período (625 µs a 1 600/s; 100 µs, o mínimo, acima, que a
-16 k/s é 1,6 amostras de latência e a 50 k/s 5): 135, 812 e 1 229 µA. Por
-amostra: 122 µA a 1 600/s e 1 009 µA a 16 k/s; a 50 k/s fora da faixa. O
+1 600/s; drenado com T = 1 ms custa 293 µA a 16 k/s e 707 µA a 50 k/s.
+Drenado com T = período (625 µs a 1 600/s; 100 µs, o mínimo, acima, que
+com o T real de 160 µs é 2,6 amostras de latência a 16 k/s e 8 a 50 k/s):
+186, 841 e 1 015 µA. Por amostra: 122 µA a 1 600/s e 1 009 µA a 16 k/s; a
+50 k/s fora da faixa. Até ≈ 12 k/s o modo por amostra custa menos que T =
+período; acima disso o T de 100 µs já agrupa amostras e custa menos. O
 FLPR fica sem número: a amostra `vpr_offloading` da Nordic mediu 146 →
 125 µA no nRF54L15 com ~1 k transações SPI/s (R), mas um relato de
 DevZone dá +0,5 mA de idle do VPR noutra configuração (R). Só o PPK2
@@ -187,10 +195,11 @@ decide.
 | [`docs/`](docs) | Diagramas (`gen_diagrams.py` gera os SVG sem dependências) e [`POWER.md`](docs/POWER.md), o modelo de consumo. |
 | [`tools/`](tools) | Scripts de gravação e captura de log por RTT. |
 
-Os dois exemplos têm o mesmo engine (`src/spim_dppi.c`: anel, drenagem,
-wrap, e o modo por amostra), os mesmos backends de sensor e os mesmos
-overlays. Cada exemplo traz só o seu disparo; o do TIMER acrescenta o
-filtro de repetidas, a captura de latência e as opções de bancada.
+Os dois exemplos têm o mesmo desenho de engine (`src/spim_dppi.c`: anel,
+drenagem, wrap, e o modo por amostra), os mesmos backends de sensor e os
+mesmos overlays. Cada exemplo traz só o seu disparo; o engine do TIMER tem
+a mais o filtro de repetidas, o pedido do HFXO, a captura de latência e as
+opções de bancada (RRAM em standby, wrap em `STARTED`).
 
 ## Caso 1 — data-ready → GPIOTE → DPPI → SPIM (recomendado)
 
@@ -232,9 +241,9 @@ logs em `gpiote_dppi_spim/test-logs/`):
 | Alvo | Sensor | ODR | SCK | Modo | Transações/s | queued = fresh | dropped / late / ovf / torn | Log |
 |---|---|---|---|---|---|---|---|---|
 | TAG M33 | BMI270 | 1 600 Hz (D, máx.) | 8 MHz | drenado, T = 10 ms | 1 608–1 609 | sim | 0 | `u_tag_int_drain10ms_1600.log` |
-| TAG M33 | BMI270 | 1 600 Hz | 8 MHz | por amostra | 1 608 | sim | 0 | `u_tag_int_persample_1600.log` |
-| TAG FLPR | BMI270 | 1 600 Hz | 8 MHz | drenado, T = 10 ms | 1 614 (`queued` alterna 1 607 / 1 621 por janela: é o relógio de uptime do FLPR que arredonda a janela de relatório, não a taxa) | sim | 0 | `u_tag_flpr_int_drain10ms_1600.log` |
-| TAG FLPR | BMI270 | 1 600 Hz | 8 MHz | por amostra | 1 609 | sim | 0 | `u_tag_flpr_int_persample_1600.log` |
+| TAG M33 | BMI270 | 1 600 Hz | 8 MHz | por amostra | 1 607–1 608 | sim | 0 | `u_tag_int_persample_1600.log` |
+| TAG FLPR | BMI270 | 1 600 Hz | 8 MHz | drenado, T = 10 ms | ≈ 1 607 (`xfers` avança 1 613–1 614 por relatório, mas os relatórios saem a cada ≈ 1 004 ms; `queued` alterna 1 607 / 1 621 pela mesma janela) | sim | 0 | `u_tag_flpr_int_drain10ms_1600.log` |
+| TAG FLPR | BMI270 | 1 600 Hz | 8 MHz | por amostra | 1 607–1 608 | sim | 0 | `u_tag_flpr_int_persample_1600.log` |
 | Thingy:53 M33 | ADXL362 | 400 Hz (D, máx.; real ≈ 372) | 4 MHz | drenado, T = 10 ms | 371–373 | sim | 0 | `u_thingy_int_drain10ms.log` |
 | Thingy:53 M33 | ADXL362 | 400 Hz | 4 MHz | por amostra | 372 | sim | 0 | `u_thingy_int_persample.log` |
 
@@ -273,8 +282,9 @@ entrega é a mesma do caso 1, com o filtro de repetidas.*
 
 ![Timing do caso 2](docs/caso2_timer.svg)
 
-*Timer a 100 µs contra sensor a 400 Hz, para mostrar as repetidas: só uma
-em cada 25 rajadas traz amostra nova.*
+*Escala comprimida para mostrar as repetidas: no desenho 3 das 7 rajadas
+trazem amostra nova; com timer a 100 µs e sensor a 400 Hz seria uma em
+cada 25.*
 
 Timer × ODR, medido na TAG com o BMI270 a 401,8/s reais (M, varredura de
 2 500 a 2 200 µs, `bench/sweep-tag.conf`,
@@ -305,18 +315,27 @@ Kconfig de diferença.**
 - **Anel de `APP_RING_SLOTS` + 8 slots.** O EasyDMA em array list avança um
   slot por transação sozinho. Os 8 slots de guarda recebem a escrita se
   uma drenagem atrasar tanto que o head passe do fim do anel (contado uma
-  vez por volta em `overflows`), em vez de corromper o que vier depois.
-  Cada item da fila é a rajada crua de B bytes. RAM = (slots + 8) × B mais
+  vez por volta em `overflows`); só isso. Um atraso maior que 8 transações
+  além do anel faz o EasyDMA escrever fora do array e corromper a RAM, e
+  nada detecta: a regra de tamanho do anel não é opcional. Cada item da
+  fila é a rajada crua de B bytes. RAM = (slots + 8) × B mais
   a fila × B: com os padrões (256 + 8 e 256) são 8,8 KB para 17 B e
   5,7 KB para 11 B; com os da bancada (512 + 8 e 1 024), 17 KB para 11 B
   e 26 KB para 17 B (E).
 - **Drenagem, a cada T.** A thread (prioridade cooperativa −1) acorda por
   `k_sleep`, lê o head em `DMA.RX.PTR` e entrega à fila os slots
-  `[tail, head − 1)`: o slot head − 1 pode estar em curso e fica para a
-  drenagem seguinte. `xfers` sai daí: voltas completas mais o head, exato.
-  O período real é T mais o tempo da drenagem, arredondado ao tick do
-  kernel (32 µs no nRF54L15, 30,5 µs no nRF5340): a latência de entrega é
-  no máximo T + tick + drenagem.
+  `[tail, head − 1)`. O ponteiro diz quantas transações começaram, não se
+  a mais nova (slot head − 1) já terminou; por isso, com até 4 slots
+  pendentes (taxa baixa), a drenagem espera um tempo de transação
+  (`XFER_SETTLE_US` = bytes × 8 / SCK + 4 µs: ≈ 21 µs para 17 B, ≈ 15 µs
+  para 11 B) e, se nenhum `START` apareceu, entrega também esse slot. Em
+  taxa alta ele fica para a drenagem seguinte, uma fração de T depois.
+  `xfers` sai daí: voltas completas mais o head, exato. O período real é
+  T arredondado para cima ao tick do kernel mais um tick (`k_sleep`:
+  32 µs no nRF54L15, 30,5 µs no nRF5340) mais o tempo da drenagem: 10 ms
+  viram ≈ 10,05 ms, 1 ms ≈ 1,06 ms, 100 µs ≈ 160 µs. A latência de
+  entrega é no máximo esse T real em taxa baixa; se o sensor parar, a
+  última amostra sai na drenagem seguinte.
 - **Wrap na IRQ de `READY`, uma vez por volta.** Quando o head passou da
   metade do anel (`APP_RING_SLOTS / 2`), a drenagem habilita uma vez a
   interrupção do evento `DMA.RX.READY` (nRF54L) ou `STARTED` (nRF5340). Na
@@ -327,8 +346,8 @@ Kconfig de diferença.**
   o resto da volta antiga até `wrap_last`, depois a volta nova desde o slot
   0. Armar só depois da metade garante que os slots da volta antiga ainda
   por entregar estão pelo menos meio anel à frente da volta nova; é daí que
-  vem a regra anel ≥ 2 × taxa × T. As voltas têm entre metade e um anel de
-  comprimento.
+  vem a regra anel ≥ 2 × taxa × T real. As voltas têm entre metade e um
+  anel (mais a guarda) de comprimento.
 - **Prazo do wrap = um período.** O datasheet dos dois SoCs diz que o
   ponteiro é double-buffered e pode ser escrito "imediatamente após
   STARTED"; o nRF54L tem o evento explícito `DMA.RX.READY`. Escrever perto
@@ -336,20 +355,23 @@ Kconfig de diferença.**
   ponteiro pelo hardware no `START` seguinte (Achado 7 do
   `gpiote_dppi_spim`). Se um `START` entrar entre a limpeza do evento e a
   escrita, a ISR percebe (o evento `READY` volta a aparecer com o head
-  ainda em 0): aquela transação usou o slot k + 1, `wrap_last` passa a ser
-  k + 1, `late_wraps++`, e nada se perde.
+  ainda em 0): aquela transação usou o slot k + 1. Como a ISR não sabe se
+  esse `START` veio antes ou depois de ela ler o head, o slot não é
+  entregue: `late_wraps++` e uma amostra se perde, mas nenhum dado antigo
+  entra na fila. Nas bancadas o contador ficou em zero até os tetos.
 - **Espera acordada nas taxas altas.** A IRQ de wrap vinda de idle entra
-  com ~16 µs no M33 do nRF54L15 (M: 14,4–15,4 µs de média e 16,25 de
-  máximo a 1 000–100 µs de período, `u_tag_wrap_latency.log`), porque a
-  RRAM entra em power-down em idle, e no nRF5340 o wake-up também passou
-  de 14–25 µs de período (Achado 3 do `timer_dppi_spim`). Por isso,
-  quando as amostras da última drenagem estavam mais próximas que
-  `APP_WRAP_AWAKE_BELOW_US` (64 µs por padrão), a thread espera pelo wrap
-  acordada, no máximo T/4 ou 8 períodos + 8 µs: a latência medida cai
-  para 1,25–2,12 µs (M). Custo: nesse intervalo a thread cooperativa
-  bloqueia as threads preemptíveis (pilha de rádio inclusive); o modelo de
-  consumo conta um período por wrap. Em taxas baixas a IRQ vem de idle e o
-  core dorme; os 16 µs não incomodam com período ≥ 64 µs.
+  com ≈ 16 µs no M33 do nRF54L15 (M: 16,1 µs de média e 16,5 de máximo a
+  1 000 µs de período, `u_tag_wrap_latency.log`), porque a RRAM entra em
+  power-down em idle, e com ≈ 11 µs de máximo no nRF5340 (M, 100 µs de
+  período, `u_thingy_bus64k.log`). Por isso, quando as amostras da última
+  drenagem estavam mais próximas que `APP_WRAP_AWAKE_BELOW_US` (64 µs por
+  padrão), a thread espera pelo wrap acordada, no máximo min(T/4,
+  8 períodos + 8 µs), ou seja, no máximo ≈ 520 µs: a latência medida cai
+  para 1,1–2,1 µs no nRF54L15 e 1,6–2,2 µs no nRF5340 (M). Custo: nesse
+  intervalo a thread cooperativa bloqueia as threads preemptíveis (pilha
+  de rádio inclusive); o modelo de consumo conta um período por wrap. Em
+  taxas baixas a IRQ vem de idle e o core dorme; os 16 µs não incomodam
+  com período ≥ 64 µs.
 - **O acordar da drenagem também paga a RRAM.** Nada nos builds acorda a
   RRAM antes do `k_sleep` expirar (`CONFIG_NRF_SYS_EVENT` não está
   habilitado; o `CONFIG_NRF_SYS_EVENT_IRQ_LATENCY` do Zephyr existe para
@@ -359,10 +381,11 @@ Kconfig de diferença.**
 
 ![Anel, drenagem e wrap](docs/anel_drenagem.svg)
 
-*8 slots para caber no desenho: a drenagem lê o head, entrega os slots
-completos e, quando o head passou da metade do anel, arma a IRQ de
-`READY`; a ISR devolve o ponteiro ao slot 0 e a transação seguinte já
-escreve lá.*
+*8 slots para caber no desenho, em taxa alta (várias transações por T):
+a drenagem lê o head, entrega os slots completos e, quando o head passou
+da metade do anel, arma a IRQ de `READY`; a ISR devolve o ponteiro ao
+slot 0 e a transação seguinte já escreve lá. Em taxa baixa a drenagem
+espera um tempo de transação e entrega também o slot head − 1.*
 
 ### Modo por amostra (`APP_PER_SAMPLE_IRQ`)
 
@@ -373,22 +396,29 @@ escreve lá.*
   `READY`, limpo antes de copiar, reaparece) e põe a amostra na fila. Se
   chegou, a amostra é descartada e contada em `torn`.
 - **Latência = entrada da ISR + cópia.** Medido na TAG (trigger → ISR de
-  `END`, `u_tag_persample_sweep.log`): 19,7 µs de mínimo em todos os
-  períodos, ou seja, 18,5 µs de transação mais ≈ 1,2 µs de ISR; a média
-  vai de 25,7 µs a 1 000 µs de período (o core dorme entre amostras e
-  paga a RRAM) a 19,6 µs a 25 µs (nunca chega a dormir); o máximo é 35 µs
-  (≈ 16,5 µs de wake-up) sempre que há idle entre amostras.
-- **Limite de taxa.** A cópia tem de acabar antes do `START` seguinte:
-  período > transação + latência da ISR vinda de idle + ~2 µs, isto é,
-  ≈ 18,5 + 16,5 + 2 = 37 µs na TAG e ≈ 12,5 + 25 + 2 ≈ 40 µs no nRF5340
-  (E). Medido: na TAG zero `torn` e `queued = fresh` até 25 µs (40 k/s),
-  porque a essa taxa o core não chega a dormir; a 20 µs `torn` em quase
-  todas (247 706 em 5 s). No nRF5340 limpo a 100 µs (10 k/s), perda de
-  ~19 % das amostras novas a 50 µs e `torn` em 60 % a 25 µs. Um `START`
-  que chega **antes** de a ISR entrar não é detectável (parece a
-  transação normal) e mistura bytes das duas transações: é o que acontece
-  na TAG a 19 µs (`torn` 0, mas a ISR entra 0,7 µs depois do `START`
-  seguinte) e no nRF5340 a 50 µs. Acima do limite, use o modo drenado.
+  `END`, `u_tag_persample_sweep.log`): 19,7 µs de mínimo, ou seja, 18,5 µs
+  de transação mais ≈ 1,2 µs de ISR; a média vai de 25,7 µs a 1 000 µs de
+  período (o core dorme entre amostras e paga a RRAM) a 19,9 µs a 40 µs;
+  o máximo é 34,8–35,0 µs (≈ 16,5 µs de wake-up) em todos os períodos de
+  1 000 a 40 µs. No nRF5340 (`u_thingy_persample_sweep.log`): 13,9–14,1 µs
+  de mínimo (12,5 de transação + ≈ 1,5 de ISR) e até 37,1 µs de máximo
+  (≈ 23 µs de wake-up).
+- **Limite de taxa, em três números.** (1) Garantia: a cópia tem de
+  acabar antes do `START` seguinte, então período > transação + latência
+  máxima da ISR vinda de idle + ≈ 2 µs: ≈ 18,5 + 16,5 + 2 = 37 µs na TAG
+  (27 k/s) e ≈ 12,5 + 23 + 2 = 38 µs no nRF5340 (26 k/s) (E, com os
+  máximos medidos). (2) Medido limpo: na TAG `queued = fresh` e `torn = 0`
+  até 40 µs (25 k/s); a 30 e 25 µs os contadores continuam limpos, mas a
+  latência mínima cai a 0,06 e 9,7 µs, abaixo da transação, ou seja,
+  algumas ISRs entraram depois do `START` seguinte; a 20 µs `torn` em
+  quase todas (247 716 em 5 s). No nRF5340 limpo até 100 µs (10 k/s),
+  −1 % de amostras novas a 50 µs, −5 % a 40 µs, `torn` a partir de 30 µs.
+  (3) Consumo: até ≈ 12 k/s custa menos que o modo drenado com T =
+  período (E). Um `START` que chega **antes** de a ISR entrar não é
+  detectável (parece a transação normal) e mistura bytes das duas
+  transações: é o que acontece na TAG a 30–25 µs e, sem nenhum sintoma
+  nos contadores, a 19 µs (`torn` 0, `fresh` 402, mas a ISR entra 0,7 µs
+  depois do `START` seguinte). Acima do limite, use o modo drenado.
 - **Custo.** Uma interrupção por amostra, com o wake-up de idle a cada uma
   nas taxas em que o core dorme: ≈ 22,5 µs de CPU por amostra no M33 do
   nRF54L15 (E), contra 3,5 µs por amostra mais 22 µs por drenagem no modo
@@ -425,8 +455,8 @@ passo entre 14 e 12 µs). Medido 52,6 k/s (17 B) e 71,4 k/s (11 B) a
 
 | Alvo | Rajada | SCK | Último período válido | Transações/s | Acima do teto | Fonte |
 |---|---|---|---|---|---|---|
-| TAG M33, SPIM22 | 17 B | 8 MHz | 19 µs | **52,6 k** | o `START` chega com a SPIM ocupada: o ponteiro continua avançando (55,5–62,5 k/s em `xfers`), o bit `fresh` ainda aparece (546 / 227 / 453 por s), mas os dados congelam: Z mín. ≈ máx. (0,55–0,58 m/s² contra 0,46–0,71 nas taxas válidas) | M, `u_tag_busmax.log` |
-| Thingy:53 M33, SPIM4 | 11 B | 8 MHz | 14 µs | **71,4 k** | o `START` reinicia a transação em curso; `xfers` continua (83–100 k/s), `fresh` marca 303–306/s, os dados congelam (Z = −7,29 fixo) | M, `u_thingy_bus64k.log` |
+| TAG M33, SPIM22 | 17 B | 8 MHz | 19 µs | **52,6 k** | o ponteiro continua avançando (55,5–62,5 k/s em `xfers`), o bit `fresh` sai do ODR (364 / 454 / 453 por s contra 402) e a faixa de Z estreita (0,57–0,61 m/s² em toda janela contra 0,54–0,66 nos passos válidos do mesmo log): não comprovado a 18 µs e abaixo | M, `u_tag_busmax.log` |
+| Thingy:53 M33, SPIM4 | 11 B | 8 MHz | 14 µs | **71,4 k** | o `START` reinicia a transação em curso; `xfers` continua (83–100 k/s), `fresh` marca 607/s, os dados congelam: Z mín. −8,44 e máx. −6,89 m/s² idênticos em todas as janelas de 12, 11 e 10 µs | M, `u_thingy_bus64k.log` |
 
 ![Teto do barramento](docs/teto_barramento.svg)
 
@@ -435,47 +465,57 @@ ocupada.*
 
 Acima do teto nada no log acusa a falha por si: `xfers` vem do ponteiro do
 EasyDMA, que avança a cada `START`, e o bit de data-ready lido na rajada
-não é confiável nesse espaçamento. O critério é o conteúdo: Z mínimo igual
-ao máximo é dado congelado. Os 71,4 k/s são da SPIM4 do nRF5340; a
+não é confiável nesse espaçamento. O critério é o conteúdo. No nRF5340 ele
+é inequívoco: Z mínimo e máximo idênticos em todas as janelas. Na TAG a
+evidência é mais fraca: `fresh` sai do ODR e a faixa de Z estreita, mas
+não congela de todo, então 19 µs é o último período comprovado e 18–16 µs
+ficam como "não comprovado". Os 71,4 k/s são da SPIM4 do nRF5340; a
 varredura não tem passo de 13 µs, então o teto real do nRF5340 está entre
 71,4 e 83 k/s. Para a SPIM2x do nRF54L15 com 11 B a fórmula dá 80 k/s e o
 medido no nRF5340 sugere ≈ 71–80 k/s (E), não medido: a TAG só tem sensor
 de 17 B. O 1,5 µs fixo é `START` até o primeiro SCK mais CSN, inferido do
-teto (19 µs passa e 18 µs falha para 17 µs de bits): E. O teto no FLPR não
-foi medido com o mecanismo atual.
+teto (19 µs passa e 18 µs não é comprovado, para 17 µs de bits): E. O teto
+no FLPR não foi medido com o mecanismo atual.
 
 ### Prazo do wrap × wake-up do core
 
 **TL;DR: o wrap tem um período de prazo e, com amostras mais próximas que
-64 µs, é esperado com o core acordado: 1,25–2,12 µs (M) até os tetos dos
-dois SoCs, sem ZLI, sem RRAM em standby, sem FLPR. Saindo de idle a IRQ
-custa 14–16 µs no M33 do nRF54L15 (M), inofensivo com período ≥ 64 µs.**
+64 µs, é esperado com o core acordado: 1,1–2,1 µs no nRF54L15 e 1,6–2,2 µs
+no nRF5340 (M) até os tetos dos dois SoCs, sem ZLI, sem RRAM em standby,
+sem FLPR. Saindo de idle a IRQ custa ≈ 16 µs no M33 do nRF54L15 e ≈ 11 µs
+no nRF5340 (M), inofensivo com período ≥ 64 µs.**
 
-No nRF54L15 a latência de uma IRQ com o core em idle é 14,4–15,4 µs de
-média e 16,25 µs de máximo (M, `bench/n1-tag.conf`,
-`u_tag_wrap_latency.log`, períodos de 1 000 a 100 µs) = 13 µs de RRAM em
-power-down (D, `tIDLE2CPU`) + ~2 µs de DPPI, IRQ e entrada da ISR. Com o
-core acordado são 1,25–1,87 µs (M, mesmo log, períodos ≤ 50 µs, espera
-acordada). Na bancada do teto (`bench/bus-max-tag.conf`, T = 1 ms) todos
-os períodos ficam abaixo de 64 µs, a thread espera acordada em todos e a
-latência é 1,25–2,12 µs com `late_wraps = 0` até 52,6 k/s (M). O nRF5340
-não tem RRAM, mas o wake-up de idle também passou do período: antes da
-espera acordada existir a mesma bancada dava dezenas a centenas de
-`late_wraps` por passo entre 25 e 14 µs (M, execução anterior, log não
-incluído); com ela, zero em todos os passos, dados válidos até 14 µs (M,
-`u_thingy_bus64k.log`). Nenhum dos dois SoCs precisa de zero-latency IRQ.
+No nRF54L15 a latência de uma IRQ com o core em idle é 16,1 µs de média e
+16,5 µs de máximo (M, `bench/wrap-latency-tag.conf`,
+`u_tag_wrap_latency.log`, período de 1 000 µs; a 500 e 250 µs a média cai
+a 15,6–15,8 porque parte dos wraps apanha o core ainda acordado) = 13 µs
+de RRAM em power-down (D, `tIDLE2CPU`) + ~3 µs de DPPI, IRQ e entrada da
+ISR. Com o core acordado são 1,25–1,90 µs de média e 2,12 de máximo (M,
+mesmo log, períodos ≤ 50 µs, espera acordada). Na bancada do teto
+(`bench/bus-max-tag.conf`, T = 1 ms) todos os períodos ficam abaixo de
+64 µs, a thread espera acordada em todos e a latência é 1,12–1,93 µs com
+`late_wraps = 0` até 52,6 k/s (M). O nRF5340 não tem RRAM, mas também paga
+para acordar: 10,9 µs de máximo na IRQ de wrap a 100 µs de período e até
+≈ 23 µs de entrada da ISR de `END` no modo por amostra (M,
+`u_thingy_bus64k.log`, `u_thingy_persample_sweep.log`). Antes da espera
+acordada existir a bancada do nRF5340 dava dezenas a centenas de
+`late_wraps` por passo entre 25 e 14 µs de período (M, execução anterior,
+log não incluído); com ela, zero em todos os passos, latência 1,56–2,18 µs
+e dados válidos até 14 µs (M, `u_thingy_bus64k.log`). Nenhum dos dois SoCs
+precisa de zero-latency IRQ.
 
 O que sobra para `APP_RRAM_STANDBY` e para o FLPR: latência determinística
 de outras ISRs do produto, custo menor de cada drenagem e de cada ISR do
 modo por amostra (os 13 µs de RRAM saem), e, no FLPR, livrar o M33. O
 custo de CPU da espera acordada é de no máximo um período por wrap (E,
-incluído no modelo de consumo).
+incluído no modelo de consumo), limitado a min(T/4, 8 períodos + 8 µs).
 
 ### nRF54L15: Cortex-M33 × FLPR
 
 **TL;DR: mesmo código nos dois cores. A latência de uma IRQ saindo de
-idle é 14–16 µs no M33 padrão (M), 2,75 µs com RRAM em standby e 2,43 µs
-no FLPR (M, mecanismo anterior); o consumo do FLPR não foi medido aqui.**
+idle é ≈ 16 µs no M33 padrão (M, com log), 2,75 µs com RRAM em standby e
+2,43 µs no FLPR (M, mecanismo anterior, log não incluído); o consumo do
+FLPR não foi medido aqui.**
 
 ![M33 × FLPR](docs/m33_vs_flpr_nrf54l15.svg)
 
@@ -484,10 +524,10 @@ máximo.*
 
 | Latência de uma IRQ (`APP_WRAP_LATENCY_STATS`) | M33 padrão | M33 + RRAM standby | FLPR | Fonte |
 |---|---|---|---|---|
-| Disparo → ISR de wrap, core em idle (mecanismo atual, `bench/n1-tag.conf`, 1 000–100 µs) | 14,4–15,4 µs (máx. 16,25) | — | — | M, `u_tag_wrap_latency.log` |
-| Disparo → ISR de wrap, espera acordada (mecanismo atual, ≤ 50 µs) | 1,25–1,81 µs (máx. 1,87) | — | — | M, idem |
-| Disparo → ISR de `END`, modo por amostra (mecanismo atual, `bench/per-sample-tag.conf`) | 19,7 µs mín. (18,5 de transação + 1,2), 35 µs máx. | — | — | M, `u_tag_persample_sweep.log` |
-| Disparo → ISR de wrap, core em idle (mecanismo anterior, uma IRQ por amostra) | 16,8 µs (máx. 17,3) | 2,75 µs (máx. 2,93) | 2,43 µs (máx. 2,50) | M, mecanismo anterior, log não incluído |
+| Disparo → ISR de wrap, core em idle (mecanismo atual, `bench/wrap-latency-tag.conf`, 1 000 µs) | 16,1 µs (máx. 16,5) | — | — | M, `u_tag_wrap_latency.log` |
+| Disparo → ISR de wrap, espera acordada (mecanismo atual, ≤ 50 µs) | 1,25–1,90 µs (máx. 2,12) | — | — | M, idem |
+| Disparo → ISR de `END`, modo por amostra (mecanismo atual, `bench/per-sample-tag.conf`) | 19,7 µs mín. (18,5 de transação + 1,2), 35,0 µs máx. | — | — | M, `u_tag_persample_sweep.log` |
+| Disparo → ISR de wrap, core em idle (mecanismo anterior, uma IRQ por amostra) | 16,8 µs (máx. 17,3; igual com constant latency) | 2,75 µs (máx. 2,93) | 2,43 µs (máx. 2,50) | M, mecanismo anterior, log não incluído |
 
 Os números do mecanismo anterior foram medidos pela mesma cadeia DPPI →
 `START` → `READY` → IRQ e continuam válidos como latência de uma IRQ; o
@@ -495,8 +535,8 @@ FLPR e a RRAM em standby não foram remedidos com o mecanismo atual.
 
 | Caso 1 a 1 600 Hz | M33 | FLPR | Fonte |
 |---|---|---|---|
-| Transações/s, drenado (T = 10 ms) | 1 608–1 609 | 1 614 | M |
-| Transações/s, por amostra | 1 608 | 1 609 | M |
+| Transações/s, drenado (T = 10 ms) | 1 608–1 609 | ≈ 1 607 | M |
+| Transações/s, por amostra | 1 607–1 608 | 1 607–1 608 | M |
 | TIMER exato (caso 2) | pede o HFXO no próprio app | precisa do `hfxo_launcher` no app core | M |
 | Onde o código roda | RRAM (imagem de 50 KB) | RAM (29 KB de código) | saída do build |
 
@@ -535,17 +575,27 @@ sensor, latência de entrega aceitável, SoC.
    a) Latência de alguns ms serve  -> modo drenado, T = 10 ms (padrão); T = 1 ms acima de ~12 k/s.
       IRQ/s = 1/T + uma por volta do anel (anel/2 amostras), qualquer que seja a taxa.
    b) Latência de uma amostra, sem prazo duro -> modo drenado, T ≈ t_per (mínimo 100 µs):
-      entrega em até T + tick (32 µs) + drenagem; custa 2,7 a 2,8× o (a) (E).
-   c) Latência de uma ISR, determinística -> APP_PER_SAMPLE_IRQ=y, só se
-      t_per > t_trans + 17 µs (M33 nRF54L15) ou + 25 µs (nRF5340) + 2 µs;
-      medido limpo até 40 k/s na TAG (17 B) e 10 k/s na Thingy:53 (11 B).
-      Uma IRQ por amostra: custa 2,5× o (a) a 1 600/s, 3,4× a 16 k/s (E).
-   Anel (modo drenado): amostras por drenagem = taxa × T; APP_RING_SLOTS >= 2 × isso, máximo 4 096.
+      entrega em até T real (T arredondado ao tick + 1 tick + drenagem: 625 µs -> 672 µs);
+      custa 2,9 a 3,8× o (a) até 16 k/s (E).
+   c) Latência de uma ISR, determinística -> APP_PER_SAMPLE_IRQ=y. Três limites, do mais
+      forte ao mais fraco: garantido se t_per > t_trans + 16,5 µs (M33 nRF54L15) ou + 23 µs
+      (nRF5340) + 2 µs (≈ 37 µs / 27 k/s com 17 B; ≈ 38 µs / 26 k/s com 11 B); medido limpo
+      até 40 µs (25 k/s) na TAG e 100 µs (10 k/s) na Thingy:53 (a 50 µs, −1 %); custa menos
+      que o (b) até ≈ 12 k/s e 2,5× o (a) a 1 600/s (E). Timestamp por amostra: só este modo
+      o dá de graça (na ISR); no modo drenado reconstrói-se pelo índice × período do timer ou
+      pela contagem do data-ready.
+   Anel (modo drenado): amostras por drenagem = taxa × T real; APP_RING_SLOTS >= 2 × isso,
+   máximo 4 096; os 8 slots de guarda só acusam o estouro (ovf), além deles a RAM corrompe.
    RAM = (APP_RING_SLOTS + 8) × B + APP_QUEUE_DEPTH × B; fila >= amostras por drenagem mais o
    atraso do consumidor. Espera acordada: APP_WRAP_AWAKE_BELOW_US (64 µs) cobre o wake-up dos
-   dois SoCs; só mexer se o produto não tolerar até T/4 de thread cooperativa acordada.
+   dois SoCs (16 e 11 µs, M); só mexer se o produto não tolerar até min(T/4, 8 períodos + 8 µs)
+   (≤ ≈ 520 µs) de thread cooperativa acordada, uma vez por volta do anel.
+   Borda perdida (caso 1): o data-ready é nível; se uma borda se perder a aquisição para com o
+   pino alto. Um watchdog que dispare START por software quando xfers não avança não está
+   implementado: prever no produto.
    Referência: 1 600/s e T = 10 ms -> 16 por drenagem, anel 256, 112 IRQ/s.
-               64 k/s e T = 1 ms -> 64 por drenagem, anel 256 (512 na bancada), 1 500 IRQ/s.
+               64 k/s e T = 1 ms -> 68 por drenagem (T real 1,06 ms), anel 256 (512 na bancada),
+               ≈ 1 420 IRQ/s (947 drenagens + 473 wraps).
                50 k/s e T = 10 ms pediria anel de 1 000: use T = 1 ms.
 4. Onde roda
    Prazo do wrap: resolvido pelo engine (espera acordada abaixo de 64 µs de período; medido
@@ -561,74 +611,85 @@ Consumo pela tabela de [Consumo](#consumo--resumo) (E):
 
 - **BMI270, 1 600 Hz, 17 B, nRF54L15.** Caso 1. t_trans = 18,5 µs contra
   t_per = 625 µs: 3 % de ocupação. Modo drenado com T = 10 ms (16 amostras
-  por drenagem, anel 256, 112 IRQ/s, 10 ms de latência), M33 padrão,
-  SPIM22. Medido: 1 608–1 609/s no M33 e 1 614/s no FLPR, zero perdas (M).
-  Consumo: linha "T = 10 ms, SPIM22" a 1 600/s, 49 µA, mais 0,25 mA ×
-  1 600 × 6 µs = 2,4 µA pelos 17 B: ≈ 51 µA (E). Com T = 625 µs: ≈ 137 µA;
-  por amostra (medido zero perdas, M): ≈ 124 µA (E).
+  por drenagem, anel 256, 112 IRQ/s, ≈ 10 ms de latência), M33 padrão,
+  SPIM22. Medido: 1 608–1 609/s no M33 e ≈ 1 607/s no FLPR, zero perdas
+  (M). Consumo: linha "T = 10 ms, SPIM22" a 1 600/s, 49 µA, mais 0,25 mA ×
+  1 600 × 6 µs = 2,4 µA pelos 17 B: ≈ 51 µA (E). Com T = 625 µs (672 µs
+  reais): ≈ 188 µA; por amostra (medido zero perdas, M): ≈ 124 µA (E).
 - **ADXL382, 64 kHz, 11 B, latência de 1 ms, nRF54L15.** Caso 1. 80 % na
   SPIM2x a 8 MHz (cabe, sem sobra para `CSNDUR` maior ou jitter); SPIM00 a
   32 MHz, 27 % (não testado; a errata 8 não atinge o comando `0x23`). Modo
-  drenado, T = 1 ms (64 amostras por drenagem, anel 256, 1 500 IRQ/s); a
-  drenagem espera acordada pelo wrap (15,6 µs < 64 µs). O modo por amostra
-  está fora da faixa (15,6 µs < 18,5 + 17). Consumo: ≈ 0,89 mA na SPIM22,
-  ≈ 1,20 mA na SPIM00 (E, `docs/POWER.md`, seção ADXL382). Não testado em
-  hardware; o perfil de barramento foi medido no nRF5340 a 71,4 k/s.
+  drenado, T = 1 ms (≈ 68 amostras por drenagem de 1,06 ms, anel 256,
+  ≈ 1 420 IRQ/s); a drenagem espera acordada pelo wrap (15,6 µs < 64 µs).
+  O modo por amostra está fora da faixa (15,6 µs < 12,5 + 16,5 + 2).
+  Consumo: ≈ 0,88 mA na SPIM22, ≈ 1,20 mA na SPIM00 (E, `docs/POWER.md`,
+  seção ADXL382). Não testado em hardware; o perfil de barramento foi
+  medido no nRF5340 a 71,4 k/s.
 - **ADXL382, 64 kHz, 11 B, nRF5340.** Caso 1. t_trans = 12,5 µs contra
   15,6 µs: 80 %, cabe sem sobra; SPIM4 a 16 MHz dá 45 % (a confirmar o SCK
   máximo no datasheet do ADXL382 e os pinos de alta velocidade da placa).
-  Modo drenado, T = 1 ms. Consumo: ≈ 1,7 mA a 16 MHz, ≈ 2,2 mA a 8 MHz,
-  só o SoC (E, tabela do nRF5340 em `docs/POWER.md`). Não testado em
-  hardware.
+  Modo drenado, T = 1 ms; o modo por amostra está fora da faixa (15,6 µs <
+  12,5 + 23 + 2). Consumo: ≈ 1,7 mA a 16 MHz, ≈ 2,2 mA a 8 MHz, só o SoC
+  (E, tabela do nRF5340 em `docs/POWER.md`). Não testado em hardware.
 - **Sensor sem data-ready a 16 kHz, 11 B, nRF54L15.** Caso 2, timer a
   1,05 × 16 kHz = 59,5 µs: 21 % de ocupação a 8 MHz, modo drenado com T =
-  1 ms (17 por drenagem), M33 padrão. O filtro `fresh` a 59,5 µs de
+  1 ms (≈ 18 por drenagem de 1,06 ms), M33 padrão. O filtro `fresh` a 59,5 µs de
   espaçamento já não é confiável (M, ADXL362 a 25 µs marcou 547 novas/s
   para ≈ 372 reais): aceitar repetidas ou usar a FIFO do sensor. Consumo:
-  T = 1 ms na SPIM22 a 16 k/s, 297 µA, mais 135 µA de TIMER e HFXO no
+  T = 1 ms na SPIM22 a 16 k/s, 293 µA, mais 135 µA de TIMER e HFXO no
   lugar do GPIOTE (155 − 20): ≈ 0,43 mA (E).
 
 ## Consumo — resumo
 
 **TL;DR: modelo, sem PPK2. O custo fixo é o domínio PERI (20 µA, R) mais
 a base; a CPU custa ~22 µs por drenagem (17 dos quais são a RRAM
-acordando), 3,5 µs por amostra e, no modo por amostra, ~22,5 µs por
-amostra (E). T = período custa 1,7 a 2,8× o T longo; o modo por amostra
-2,5× a 1 600/s e 3,4× a 16 k/s; a SPIM00 soma ~300 µA constantes. Modelo
-completo e premissas em [`docs/POWER.md`](docs/POWER.md).**
+acordando, mais ≈ 15 µs de espera de assentamento quando chegam até 4
+amostras por drenagem), 3,5 µs por amostra e, no modo por amostra,
+~22,5 µs por amostra (E). T = período custa 3,8× o T longo a 1 600/s,
+2,9× a 16 k/s e 1,4× a 50 k/s; o modo por amostra 2,5× a 1 600/s e 3,4×
+a 16 k/s, e custa menos que T = período até ≈ 12 k/s; a SPIM00 soma
+~300 µA constantes. Modelo completo e premissas em
+[`docs/POWER.md`](docs/POWER.md).**
 
 ![Consumo por modo de entrega, instância e taxa](docs/consumo_modos_nrf54l15.svg)
 
 *Corrente média do SoC contra amostras/s para o T padrão (10 ms; 1 ms a
 16 k e 50 k/s), para o T mais curto (o período do sensor a 1 600/s; o
-mínimo de 100 µs acima) e para o modo por amostra (até a taxa em que ele
-vale), SPIM22 e SPIM00 do nRF54L15 (E).*
+mínimo de 100 µs acima; sempre com o T real, arredondado ao tick) e para
+o modo por amostra (até a taxa em que ele vale), SPIM22 e SPIM00 do
+nRF54L15 (E).*
 
 Caso 1 (data-ready), rajada de 11 bytes, toda amostra na fila, Cortex-M33
 padrão. SPIM22 a 8 MHz (12,5 µs por transação), SPIM00 a 32 MHz (4,25 µs).
 Corrente média do SoC em µA (E). Premissas: base 2,9; domínio PERI mantido
 pelo GPIOTE IN 20 µA (R); domínio MCU 300 (E) só na SPIM00; SPIM ativa
 0,25 mA (SPIM2x) ou 0,8 mA (SPIM00) (E); CPU 2,6 mA (D) × [por drenagem:
-17 µs de RRAM acordando + 5 µs de trabalho; por wrap (uma vez por volta de
-anel/2 amostras): 17 + 3 µs se a IRQ vem de idle, um período + 3 µs se a
-thread espera acordada; por amostra: 1 µs de `k_msgq_put` + 2,5 µs de
-consumidor; no modo por amostra: 17 + 3 + 2,5 µs por amostra] (E).
+17 µs de RRAM acordando + 5 µs de trabalho, mais ≈ 15 µs de espera de
+assentamento quando chegam até 4 amostras por drenagem; por wrap (uma vez
+por volta de anel/2 amostras): 17 + 3 µs se a IRQ vem de idle, um período
++ 3 µs se a thread espera acordada; por amostra: 1 µs de `k_msgq_put` +
+2,5 µs de consumidor; no modo por amostra: 17 + 3 + 2,5 µs por amostra]
+(E). Os períodos de drenagem entram com o valor real (T arredondado ao
+tick de 32 µs mais um tick): 10 ms → 10,05 ms, 1 ms → 1,06 ms, 625 µs →
+672 µs, 100 µs → 160 µs.
 
 | Entrega | Instância (SCK) | 1 600/s | 16 k/s | 50 k/s |
 |---|---|---|---|---|
-| drenado, T = 10 ms (1 600/s) e 1 ms (16 k e 50 k/s) | SPIM22 (8 MHz) | **49** | **297** | **711** |
-| drenado, T = 10 ms, 1 ms | SPIM00 (32 MHz) | 349 | 601 | 1 025 |
-| drenado, T = período (625 µs) e 100 µs (mínimo: 1,6 e 5 amostras de latência) | SPIM22 | 135 | 812 | 1 229 |
-| drenado, T = período, 100 µs | SPIM00 | 435 | 1 116 | 1 543 |
-| por amostra (`APP_PER_SAMPLE_IRQ`) | SPIM22 | 122 | 1 009 | fora da faixa (20 µs < 18,5 + 17) |
+| drenado, T = 10 ms (1 600/s) e 1 ms (16 k e 50 k/s) | SPIM22 (8 MHz) | **49** | **293** | **707** |
+| drenado, T = 10 ms, 1 ms | SPIM00 (32 MHz) | 349 | 597 | 1 021 |
+| drenado, T = período (625 µs) e 100 µs (mínimo; 160 µs reais: 2,6 e 8 amostras de latência) | SPIM22 | 186 | 841 | 1 015 |
+| drenado, T = período, 100 µs | SPIM00 | 486 | 1 145 | 1 329 |
+| por amostra (`APP_PER_SAMPLE_IRQ`) | SPIM22 | 122 | 1 009 | fora da faixa (20 µs < 12,5 + 16,5 + 2) |
 | por amostra | SPIM00 | 422 | 1 313 | fora da faixa |
 | qualquer, FLPR | SPIM22 | sem número (E) | sem número (E) | sem número (E) |
 
 Notas da tabela: a 16 k e 50 k/s o T = 10 ms pediria anel de 320 e 1 000
 slots (2 × as amostras por drenagem), por isso a linha usa T = 1 ms, que é
-o T da bancada. T = período abaixo de 100 µs está fora do range do Kconfig:
-a 16 k/s os 100 µs são 1,6 amostras de latência, a 50 k/s são 5, e a
-espera acordada cobre os dois (período < 64 µs). Rajada de 17 bytes: somar
+o T da bancada. T = período abaixo de 100 µs está fora do range do Kconfig,
+e 100 µs viram 160 µs reais (6 250 drenagens/s): a 16 k/s são 2,6 amostras
+de latência, a 50 k/s são 8, e a espera acordada cobre os dois (período <
+64 µs; a 16 k/s a decisão de esperar alterna entre drenagens com 2 e 3
+amostras, o que é inofensivo porque 17 µs < 62,5 µs). Rajada de 17 bytes: somar
 0,25 mA × taxa × 6 µs na SPIM22 ou 0,8 mA × taxa × 1,5 µs na SPIM00, só
 onde o barramento ainda cabe (17 B a 50 k/s na SPIM22 são 92 % de
 ocupação, fora do critério). PERI 20 µA (R) é a premissa de menor
@@ -636,12 +697,14 @@ confiança, mas desloca todas as linhas por igual.
 
 Três leituras:
 
-1. **T curto custa 2,8× (1,6 k/s), 2,7× (16 k/s) e 1,7× (50 k/s) o T
-   longo.** A diferença é só o número de drenagens: ~22 µs de CPU cada,
-   dos quais 17 são a RRAM acordando. O custo por amostra (3,5 µs) é o
-   mesmo. A 1 600/s o modo por amostra (122 µA) sai mais barato que T =
-   período (135 µA): uma interrupção por amostra custa menos que uma
-   drenagem mais uma amostra. A 16 k/s inverte (1 009 contra 812 µA).
+1. **T curto custa 3,8× (1,6 k/s), 2,9× (16 k/s) e 1,4× (50 k/s) o T
+   longo.** A diferença é o número de drenagens: ~22 µs de CPU cada, dos
+   quais 17 são a RRAM acordando, mais os 15 µs de assentamento quando
+   chega uma amostra só. O custo por amostra (3,5 µs) é o mesmo. Até
+   ≈ 12 k/s o modo por amostra sai mais barato que T = período (122 contra
+   186 µA a 1 600/s): uma interrupção por amostra custa menos que uma
+   drenagem mais uma amostra. A 16 k/s inverte (1 009 contra 841 µA),
+   porque o T real de 160 µs já agrupa 2,6 amostras por drenagem.
 2. **A SPIM00 custa ~300 µA a mais em qualquer taxa** (o domínio MCU
    ligado, E). Só paga pela sobra de barramento: SCK acima de 8 MHz, rajada
    longa a 64 k/s, ou taxa acima de ≈ 71–80 k/s (E). Nunca por consumo.
@@ -652,14 +715,15 @@ Três leituras:
 
 Regra que sai da tabela: data-ready + modo drenado com T = 10 ms na
 SPIM22, salvo se a latência de uma amostra for requisito (então
-`APP_PER_SAMPLE_IRQ` até ~5 k/s, ou T ≈ período acima, até 10 k/s) ou o
-barramento não couber a 8 MHz (então SPIM00). Próximo passo: medir com
-PPK2 FLPR contra M33 no caso 1.
+`APP_PER_SAMPLE_IRQ` até ≈ 12 k/s, T ≈ 100 µs de 12 k a 25 k/s, e só o
+drenado acima) ou o barramento não couber a 8 MHz (então SPIM00). Próximo
+passo: medir com PPK2 FLPR contra M33 no caso 1.
 
-nRF5340 (SPIM4, caso 1, 11 B, E, sem HFXO): a 1 600/s ≈ 0,10 mA drenado
-com T = 10 ms, ≈ 0,14 mA com T = 625 µs, ≈ 0,11 mA por amostra; a 64 k/s
-e T = 1 ms ≈ 2,2 mA a 8 MHz ou 1,7 mA a 16 MHz; com T = 100 µs ≈ 2,4 ou
-1,9 mA. Tabela em `docs/POWER.md`.
+nRF5340 (SPIM4, caso 1, 11 B, E, sem HFXO, com o acordar medido de 11 µs
+por drenagem e 23 µs por ISR de `END`): a 1 600/s ≈ 0,11 mA drenado com
+T = 10 ms, ≈ 0,27 mA com T = 625 µs, ≈ 0,23 mA por amostra; a 64 k/s e
+T = 1 ms ≈ 2,2 mA a 8 MHz ou 1,7 mA a 16 MHz; com T = 100 µs ≈ 2,6 ou
+2,1 mA. Tabela em `docs/POWER.md`.
 
 ## nRF54L15: qual SPIM
 
@@ -732,7 +796,7 @@ Ocupação e wrap:
 |---|---|---|---|---|---|
 | nRF5340 SPIM4 | 8 MHz | 12,5 µs | 80 % | IRQ de `STARTED`, core acordado | mesmo perfil medido a 71,4 k/s com o ADXL362, 0 `late_wraps` (M); cabe, sem sobra para jitter ou `CSNDUR` maior |
 | nRF5340 SPIM4 | 16 MHz | 7,0 µs | 45 % | idem | recomendado, a confirmar o SCK máximo do ADXL382 e os pinos de alta velocidade da placa |
-| nRF54L15 SPIM2x | 8 MHz | 12,5 µs | 80 % | IRQ de `DMA.RX.READY`, core acordado, 1,25–2,12 µs (M, 17 B até 19 µs) | cabe, sem sobra; não testado com 11 B |
+| nRF54L15 SPIM2x | 8 MHz | 12,5 µs | 80 % | IRQ de `DMA.RX.READY`, core acordado, 1,12–1,93 µs (M, 17 B até 19 µs) | cabe, sem sobra; não testado com 11 B |
 | nRF54L15 SPIM00 | 32 MHz | 4,25 µs | 27 % | idem | sobra; não testado. Errata 8 não se aplica ao ADXL382 (primeiro byte `0x23`, MSB 0) |
 
 O que trocar no `gpiote_dppi_spim`:
@@ -755,30 +819,32 @@ O que trocar no `gpiote_dppi_spim`:
    a 16 MHz; no nRF54L15 a SPIM2x atende a 8 MHz (80 %, sem sobra) e só a
    SPIM00 passa de 8 MHz.
 4. **Entrega, anel e fila**: modo drenado, `APP_DRAIN_PERIOD_US = 1000`
-   (64 amostras por drenagem, 1 500 IRQ/s, 1 ms de latência),
-   `APP_RING_SLOTS = 256` (4 drenagens de folga; 512 como na bancada) e
-   `APP_QUEUE_DEPTH ≥ 256` (256 itens de 11 B = 2,8 KB dão ao consumidor
-   4 ms de atraso tolerado; 512 dão 8 ms). O wrap sai na IRQ de `READY`
-   com o core acordado (15,6 µs < 64 µs): sem ZLI, sem RRAM standby, nos
-   dois SoCs. O modo por amostra não serve a 64 k/s: 15,6 µs de período
-   contra 12,5 de transação mais 17–25 µs de wake-up. `late_wraps` e
-   `overflows` no log confirmam.
+   (≈ 68 amostras por drenagem de 1,06 ms, ≈ 1 420 IRQ/s, ≈ 1 ms de
+   latência), `APP_RING_SLOTS = 256` (o wrap arma com 128; sobra ≈ 2
+   drenagens de atraso antes do estouro; 512 como na bancada dobram isso)
+   e `APP_QUEUE_DEPTH ≥ 256` (256 itens de 11 B = 2,8 KB dão ao
+   consumidor 4 ms de atraso tolerado; 512 dão 8 ms). O wrap sai na IRQ
+   de `READY` com o core acordado (15,6 µs < 64 µs): sem ZLI, sem RRAM
+   standby, nos dois SoCs. O modo por amostra não serve a 64 k/s: 15,6 µs
+   de período contra 12,5 de transação mais 16,5 µs (nRF54L15) ou 23 µs
+   (nRF5340) de wake-up mais a cópia. `late_wraps` e `overflows` no log
+   confirmam.
 5. **Verificação**: transações/s no log = 64 000 ± tolerância do oscilador
    do sensor, `fresh = queued`, `late_wraps = 0`, `ovf = 0`, Z variando
    (dados válidos).
 
 Consumo estimado a 64 k amostras/s, só o SoC (E, [`docs/POWER.md`](docs/POWER.md)):
 
-| SoC / instância | T = 1 ms | T = 100 µs (mínimo; 6,4 amostras de latência) |
+| SoC / instância | T = 1 ms (1,06 ms reais) | T = 100 µs (mínimo; 160 µs reais, ≈ 10 amostras de latência) |
 |---|---|---|
-| nRF5340 SPIM4, 8 MHz | ≈ 2,2 mA | ≈ 2,4 mA |
-| nRF5340 SPIM4, 16 MHz | ≈ 1,7 mA | ≈ 1,9 mA |
-| nRF54L15 SPIM22, 8 MHz | ≈ 0,89 mA | ≈ 1,40 mA |
-| nRF54L15 SPIM00, 32 MHz | ≈ 1,20 mA | ≈ 1,72 mA |
+| nRF5340 SPIM4, 8 MHz | ≈ 2,2 mA | ≈ 2,6 mA |
+| nRF5340 SPIM4, 16 MHz | ≈ 1,7 mA | ≈ 2,1 mA |
+| nRF54L15 SPIM22, 8 MHz | ≈ 0,88 mA | ≈ 1,19 mA |
+| nRF54L15 SPIM00, 32 MHz | ≈ 1,20 mA | ≈ 1,50 mA |
 
 No nRF5340 domina a SPIM (1,7 mA enquanto transfere, D); no nRF54L15 a
 CPU (≈ 660 µA com T = 1 ms: 25 % do tempo, E) e o barramento. Com T =
-100 µs no nRF54L15 as 10 000 drenagens/s custam sozinhas 17 % de CPU só
+100 µs no nRF54L15 as 6 250 drenagens/s custam sozinhas 11 % de CPU só
 em RRAM acordando: T = 1 ms é o valor sensato. O consumo do ADXL382 não
 está incluído.
 
@@ -786,15 +852,16 @@ está incluído.
 
 | Instância / core | Disparo | Modo drenado | Modo por amostra | Teto de barramento | Consumo |
 |---|---|---|---|---|---|
-| nRF54L15 SPIM22, Cortex-M33 | data-ready e TIMER | M, 1 600 Hz e bancada até 52,6 k/s | M, 1 600 Hz e bancada até 40 k/s | M, 17 B: 52,6 k/s | E |
+| nRF54L15 SPIM22, Cortex-M33 | data-ready e TIMER | M, 1 600 Hz e bancada até 52,6 k/s | M, 1 600 Hz e bancada: limpo até 25 k/s, falso limpo a 33–40 k/s | M, 17 B: 52,6 k/s | E |
 | nRF54L15 SPIM22, FLPR | data-ready | M, 1 600 Hz | M, 1 600 Hz | não medido com o mecanismo atual | não medido, fontes conflitam (R) |
 | nRF54L15 SPIM00 (MCU), SPIM30 (LP) | — | E (mesmo código, overlay) | E | E (fórmula) | E |
-| nRF5340 SPIM4, Cortex-M33 | data-ready e TIMER | M, 400 Hz e bancada até 71,4 k/s | M, 400 Hz e bancada até 10 k/s | M, 11 B: 71,4 k/s | E |
+| nRF5340 SPIM4, Cortex-M33 | data-ready e TIMER | M, 400 Hz e bancada até 71,4 k/s | M, 400 Hz e bancada: limpo até 10 k/s, −1 % a 20 k/s | M, 11 B: 71,4 k/s | E |
 | ADXL382 (qualquer SoC) | — | E | fora da faixa (E) | E, perfil de 11 B medido com o ADXL362 | E |
 
-Latências de IRQ: M33 saindo de idle e acordado, M com o mecanismo atual;
-RRAM standby e FLPR, M com o mecanismo anterior (log não incluído).
-Correntes: nenhuma medida; PPK2 é o próximo passo.
+Latências de IRQ: M33 do nRF54L15 e nRF5340 saindo de idle e acordados,
+M com o mecanismo atual (logs incluídos); RRAM standby, FLPR e constant
+latency, M com o mecanismo anterior (log não incluído). Correntes: nenhuma
+medida; PPK2 é o próximo passo.
 
 ## Achados
 

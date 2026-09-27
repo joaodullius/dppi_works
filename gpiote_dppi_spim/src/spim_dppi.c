@@ -80,16 +80,9 @@ static uint8_t burst_tx[SENSOR_BURST_LEN];
 
 static uint32_t dropped;      /* samples that did not fit in the queue */
 #if !defined(CONFIG_APP_PER_SAMPLE_IRQ)
-static uint32_t late_wraps;   /* wraps written after the next START (slot k+1 used) */
+static uint32_t late_wraps;   /* wraps written after the next START (one sample skipped) */
 static uint32_t overflows;    /* laps in which the DMA reached the guard slots */
 static uint32_t lap_base;     /* transactions completed in previous laps (for xfers) */
-#endif
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
-static uint32_t skipped;      /* repeated samples dropped by the fresh filter */
-#endif
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
-/* Trigger-timer ticks (16 MHz) from the trigger COMPARE to the delivering ISR */
-static uint32_t lat_min = UINT32_MAX, lat_max, lat_sum, lat_n;
 #endif
 
 /* Delivery state, only touched by the drain thread (or the END ISR) and the
@@ -117,19 +110,6 @@ static inline uint32_t head_index(void)
 }
 #endif
 
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
-static inline void latency_record(void)
-{
-	/* The trigger timer was cleared by the COMPARE that started the transaction */
-	uint32_t lt = nrfx_timer_capture(&timer_trig, NRF_TIMER_CC_CHANNEL1);
-
-	lat_min = MIN(lat_min, lt);
-	lat_max = MAX(lat_max, lt);
-	lat_sum += lt;
-	lat_n++;
-}
-#endif
-
 /* ---- Blocking SPI for sensor configuration ----------------------------- */
 
 static K_SEM_DEFINE(xfer_done, 0, 1);
@@ -148,17 +128,16 @@ static void spim_evt_handler(nrfx_spim_event_t const *p_event, void *p_context)
  * Wrap ISR: READY of transaction k just fired, the register already points
  * at slot k+1. Point it at slot 0 instead, so transaction k+1 writes slot 0.
  * If a START sneaks in between the clear and the write, transaction k+1 had
- * already taken slot k+1 (in the ring or in the guard) and slot 0 goes to
- * k+2: the sample is not lost, the wrap was late (counted).
+ * already latched slot k+1 (in the ring or in the guard) and slot 0 goes to
+ * k+2. That slot is not delivered (the ISR cannot tell whether the START
+ * came before or after its head read), so a late wrap costs one sample and
+ * is counted; it never delivers stale data.
  */
 static void wrap_isr(void)
 {
 	uint32_t h, h2;
 	bool started;
 
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS) && !defined(CONFIG_APP_PER_SAMPLE_IRQ)
-	latency_record();
-#endif
 	nrf_spim_int_disable(spim.p_reg, READY_INT_MASK);
 	nrf_spim_event_clear(spim.p_reg, READY_EVENT);
 	h = head_index();                                   /* k + 1 */
@@ -166,14 +145,9 @@ static void wrap_isr(void)
 	started = nrf_spim_event_check(spim.p_reg, READY_EVENT);
 	h2 = head_index();
 	if (started && h2 == 0) {
-		/* The START came before the write: it latched slot k+1 (= h) */
-		late_wraps++;
-		wrap_last = h;
-	} else {
-		/* No START before the write (a START right after it already
-		 * latched slot 0 and shows as h2 == 1: the new lap began) */
-		wrap_last = h - 1;
+		late_wraps++;      /* transaction k+1 used slot h: skipped */
 	}
+	wrap_last = h - 1;
 	wrap_armed = false;
 	wrap_done = true;
 }
@@ -194,14 +168,6 @@ static void deliver(uint32_t from, uint32_t to)
 {
 	to = MIN(to, RING_SLOTS + GUARD_SLOTS);
 	for (uint32_t i = from; i < to; i++) {
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
-		/* TIMER faster than the ODR re-reads the previous sample: the
-		 * data-ready bit in the burst's STATUS byte tells them apart */
-		if ((ring[i][sensor->fresh_offset] & sensor->fresh_mask) == 0) {
-			skipped++;
-			continue;
-		}
-#endif
 		if (k_msgq_put(&sample_q, ring[i], K_NO_WAIT) != 0) {
 			dropped++;
 		}
@@ -235,16 +201,13 @@ static void overflow_check(uint32_t h)
  * normal one and cannot be told apart, so above that rate the data may be
  * stale: use the drain instead.
  */
-static uint32_t ends;      /* END interrupts served (= transactions unless late) */
+static uint32_t ends;      /* END interrupts served (transactions, while not late) */
 static uint32_t torn;      /* samples overwritten while being copied */
 
 static void sample_isr(void)
 {
 	uint8_t burst[SENSOR_BURST_LEN];
 
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
-	latency_record();
-#endif
 	ends++;
 	nrf_spim_event_clear(spim.p_reg, READY_EVENT);
 	memcpy(burst, ring[0], SENSOR_BURST_LEN);
@@ -252,12 +215,6 @@ static void sample_isr(void)
 		torn++;                /* the next transaction started mid-copy */
 		return;
 	}
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
-	if ((burst[sensor->fresh_offset] & sensor->fresh_mask) == 0) {
-		skipped++;
-		return;
-	}
-#endif
 	if (k_msgq_put(&sample_q, burst, K_NO_WAIT) != 0) {
 		dropped++;
 	}
@@ -268,37 +225,56 @@ static void sample_isr(void)
 /* ---- Drain: ring -> message queue, then arm the wrap -------------------- */
 
 /*
- * Called every APP_DRAIN_PERIOD_US from the drain thread. Slot h-1 may be in
- * flight, so only slots below h-1 are delivered; the remainder goes out on
- * the next drain. After a wrap, the lap that ended at wrap_last is finished
- * first, then the new lap from slot 0.
+ * Called every APP_DRAIN_PERIOD_US from the drain thread. The pointer says
+ * how many transactions started, not whether the newest (slot h-1) has
+ * ended. At low rates (few samples per drain) that slot is worth waiting
+ * for: if no new START happens within one transaction time, it is complete
+ * and goes out now instead of one sample period later. At high rates the
+ * remainder simply goes out on the next drain. After a wrap, the lap that
+ * ended at wrap_last is finished first, then the new lap from slot 0.
  */
+#define XFER_SETTLE_US (SENSOR_BURST_LEN * 8 * 1000000UL / CONFIG_APP_SPI_FREQ_HZ + 4)
+#define SETTLE_MAX_PENDING 4
+
+/* True if no transaction started during one transaction time: slot h-1 ended */
+static bool settled(uint32_t h)
+{
+	k_busy_wait(XFER_SETTLE_US);
+	return head_index() == h;
+}
+
 static void drain(void)
 {
 	uint32_t h = head_index();
 	uint32_t arrived = 0;
+	uint32_t upto;
 
 	overflow_check(h);
 	if (wrap_done) {
 		uint32_t last = wrap_last;
 
 		/* Everything up to and including wrap_last is complete once the new
-		 * lap has started (h >= 1); otherwise wrap_last may still be in flight */
-		if (h >= 1) {
+		 * lap has started (h >= 1) or the old last has settled */
+		if (h >= 1 || settled(0)) {
 			deliver(tail, last + 1);
 			lap_base += last + 1;
 			tail = 0;
 			wrap_done = false;
+			h = head_index();
 		} else {
 			deliver(tail, last);
 			tail = last;
 			return;
 		}
 	}
-	if (h >= 1 && h - 1 > tail) {
-		arrived = h - 1 - tail;
-		deliver(tail, h - 1);
-		tail = h - 1;
+	upto = h ? h - 1 : 0;
+	if (h >= 1 && h - tail <= SETTLE_MAX_PENDING && settled(h)) {
+		upto = h;
+	}
+	if (upto > tail) {
+		arrived = upto - tail;
+		deliver(tail, upto);
+		tail = upto;
 	}
 	if (arm_wrap(h) && arrived > 0 && CONFIG_APP_WRAP_AWAKE_BELOW_US > 0) {
 		/* The wrap must land before the START that follows the next READY.
@@ -379,54 +355,11 @@ int spim_xfer_blocking(const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_
 	return 0;
 }
 
-#if defined(CONFIG_APP_REQUEST_HFXO)
-static int hfxo_request(void)
-{
-	static struct onoff_client cli;
-	struct onoff_manager *mgr = z_nrf_clock_control_get_onoff(CLOCK_CONTROL_NRF_SUBSYS_HF);
-	int res;
-
-	sys_notify_init_spinwait(&cli.notify);
-	int err = onoff_request(mgr, &cli);
-
-	if (err < 0) {
-		return err;
-	}
-	while (sys_notify_fetch_result(&cli.notify, &res) == -EAGAIN) {
-		k_msleep(1);
-	}
-	LOG_INF("HFXO running");
-	return res < 0 ? res : 0;
-}
-#endif
-
-#if defined(TRIG_TIMER_NODE)
-static void timer_noop_handler(nrf_timer_event_t event_type, void *p_context)
-{
-	ARG_UNUSED(event_type);
-	ARG_UNUSED(p_context);
-}
-#endif
-
 /* ---- Init ---------------------------------------------------------------- */
 
 int spim_dppi_init(void)
 {
 	int err;
-
-#if defined(CONFIG_APP_RRAM_STANDBY)
-	/* Fast RRAM wake-up: the ISR code lives in RRAM, and after an idle
-	 * period the first fetch otherwise waits for the RRAM to power up */
-	nrf_rramc_lp_mode_set(NRF_RRAMC, NRF_RRAMC_LP_STANDBY);
-	LOG_INF("RRAMC low-power mode: standby");
-#endif
-#if defined(CONFIG_APP_REQUEST_HFXO)
-	err = hfxo_request();
-	if (err) {
-		LOG_ERR("HFXO request failed: %d", err);
-		return err;
-	}
-#endif
 
 	/* Pins (SCK/MOSI/MISO/CSN) come from the bus node's pinctrl */
 	err = pinctrl_apply_state(PINCTRL_DT_DEV_CONFIG_GET(BUS_NODE), PINCTRL_STATE_DEFAULT);
@@ -471,13 +404,11 @@ int spim_dppi_init(void)
 		LOG_ERR("%s init failed: %d", sensor->name, err);
 		return err;
 	}
-#if defined(INT_PIN_ABS)
 	/* Route data-ready to the sensor's interrupt pin (one pulse/level per sample) */
 	err = sensor->enable_drdy_int();
 	if (err) {
 		return err;
 	}
-#endif
 	return 0;
 }
 
@@ -529,49 +460,6 @@ uint32_t spim_dppi_overflows(void)
 #endif
 }
 
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY) || defined(TRIG_TIMER_NODE)
-uint32_t spim_dppi_skipped(void)
-{
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
-	return skipped;
-#else
-	return 0;
-#endif
-}
-#endif
-
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
-bool spim_dppi_wrap_latency(uint32_t *min_ns, uint32_t *avg_ns, uint32_t *max_ns, bool reset)
-{
-	unsigned int key = irq_lock();
-	uint32_t n = lat_n, mn = lat_min, mx = lat_max, sum = lat_sum;
-
-	if (reset) {
-		lat_min = UINT32_MAX;
-		lat_max = lat_sum = lat_n = 0;
-	}
-	irq_unlock(key);
-	if (n == 0) {
-		return false;
-	}
-	/* 16 MHz ticks -> ns (62.5 ns each) */
-	*min_ns = mn * 125 / 2;
-	*max_ns = mx * 125 / 2;
-	*avg_ns = (uint32_t)((uint64_t)sum * 125 / 2 / n);
-	return true;
-}
-#endif
-
-#if defined(TRIG_TIMER_NODE)
-void spim_dppi_set_period_us(uint32_t period_us)
-{
-	nrfx_timer_disable(&timer_trig);
-	nrfx_timer_clear(&timer_trig);
-	nrfx_timer_compare(&timer_trig, NRF_TIMER_CC_CHANNEL0,
-			   nrfx_timer_us_to_ticks(&timer_trig, period_us), false);
-	nrfx_timer_enable(&timer_trig);
-}
-#endif
 
 /* ---- Trigger (GPIOTE IN event on the data-ready pin), DPPI, start ------ */
 
