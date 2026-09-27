@@ -2,29 +2,37 @@
 
 ## Visão geral
 
+**TL;DR: para sensor sem pino de data-ready ou taxa fixa. Timer 5 a 10 %
+acima do ODR nominal e filtro de repetidas; abaixo do ODR real perde amostras
+sem aviso. É também a bancada do repositório.**
+
 Este exemplo lê um acelerômetro SPI em período fixo, sem CPU no caminho da
 aquisição. Um TIMER gera um evento `COMPARE0` a cada período. Esse evento,
 por DPPI, aciona o `TASKS_START` da SPIM. A SPIM controla o chip select por
 hardware e o EasyDMA entrega a rajada em RAM. Como os registradores de dados
 do sensor sempre guardam a última amostra, ler os mesmos registradores em
-loop basta. O bit de data-ready no `STATUS`, lido na mesma rajada, marca as
-amostras novas.
+loop basta. O bit de data-ready no `STATUS`, lido na mesma rajada (`fresh`),
+marca as amostras novas; aqui transações/s é a taxa do timer, não a de
+amostras.
 
 ```
 TIMER.COMPARE0 ──DPPI──▶ SPIM.TASKS_START ──▶ EasyDMA (rajada, CSN por hardware)
-                          SPIM.EVENTS_END ──DPPI──▶ TIMER (contador) ──▶ [IRQ por bloco]
+                          SPIM.STARTED / DMA.RX.READY ──DPPI──▶ TIMER (contador) ──▶ [IRQ por bloco]
 ```
 
-Um segundo TIMER, em modo contador, conta os eventos `END` da SPIM e, no modo
-QUEUE, gera uma interrupção a cada N amostras. O consumo das amostras é
-escolhido por Kconfig (modo LATEST ou modo QUEUE), como no
-[`gpiote_dppi_spim`](../gpiote_dppi_spim/README.md).
+Um segundo TIMER, em modo contador, conta os inícios de transação (`STARTED`
+no nRF5340, `DMA.RX.READY` no nRF54L) e, no modo QUEUE, gera uma interrupção
+a cada N amostras. O consumo das amostras é escolhido por Kconfig (modo
+LATEST ou modo QUEUE), como no
+[`gpiote_dppi_spim`](../gpiote_dppi_spim/README.md); o engine
+`src/spim_dppi.c` é uma cópia idêntica nos dois exemplos.
 
 Use este exemplo quando o sensor não tem pino de data-ready ou quando a taxa
-de leitura deve ser fixa e independente do sensor. O custo é um TIMER, o
-HFXO (para período exato) e leituras repetidas, que precisam ser filtradas.
-Este exemplo também é a bancada do repositório: varre períodos para medir o
-teto do barramento e a margem entre timer e ODR. Os diagramas estão no
+de leitura deve ser fixa e independente do sensor. O custo é um TIMER de
+disparo, o HFXO (para período exato) e leituras repetidas, que precisam ser
+filtradas. Este exemplo também é a bancada do repositório: varre períodos
+para medir o teto do barramento, a margem entre timer e ODR e a latência da
+ISR de wrap. Os termos, os diagramas e a interpretação estão no
 [README da raiz](../README.md).
 
 ## Requisitos
@@ -70,7 +78,7 @@ Ferramentas:
 |---|---|
 | `app,accel` | nó do acelerômetro; o barramento é o pai do nó e `cs-gpios` dá o pino de CSN |
 | `app,timer-trigger` | TIMER que dispara as transações |
-| `app,timer-count` | TIMER usado como contador de transações (`DMA.RX.READY` no nRF54L, `STARTED` no nRF5340) |
+| `app,timer-count` | TIMER usado como contador de inícios de transação (`STARTED` no nRF5340, `DMA.RX.READY` no nRF54L) |
 | `app,egu` | EGU que transforma os eventos de bloco em interrupção (modo QUEUE) |
 
 Os overlays são os mesmos do `gpiote_dppi_spim`, mais o `app,timer-trigger`.
@@ -145,69 +153,80 @@ Varredura (TAG, `bench/sweep-tag.conf`):
 ```
 
 Cada passo descarta o primeiro segundo e imprime os totais dos seguintes.
-`late_wraps` diferente de zero indica que o wrap do anel rodou depois de a
-transação seguinte ter começado (as amostras foram para a folga do anel).
+`xfers` conta inícios de transação (no relatório por segundo aparece como
+`late` o mesmo contador `late_wraps`). `late_wraps` diferente de zero indica
+que o wrap do anel rodou depois do `START` seguinte: essa transação foi para
+a folga do anel e o bloco sai deslocado um slot (uma amostra velha no lugar
+da nova), sem corromper memória.
 
 ## Resultados
 
-Medidos em 2026-09-27 com log por RTT; os logs estão em `test-logs/`.
+Medidos (M) em 2026-09-27 com log por RTT; os logs estão em `test-logs/`.
+SCK: 8 MHz na TAG; na Thingy:53, 4 MHz nos testes a 1 e 10 kHz (default do
+Kconfig) e 8 MHz no bench de 64 k (`bench/bus-64k-thingy.conf`).
 
 ### Timer de 1 kHz e 10 kHz, sensor a 400 Hz
 
 | Alvo | TIMER 1 kHz, modo LATEST | TIMER 10 kHz, modo QUEUE |
 |---|---|---|
 | Thingy:53 M33 (ADXL362) | 1000/s exato | 10000/s, fresh ≈ 380 |
-| Tag M33 (BMI270) | 1000/s exato | 10000/s, fresh 402 |
-| Tag FLPR (BMI270) | — | 10016/s do HFINT; **10001/s** com `hfxo_launcher` |
+| TAG M33 (BMI270) | 1000/s exato | 10000/s, fresh 402 |
+| TAG FLPR (BMI270) | — | 10016/s do HFINT; **10001/s** com `hfxo_launcher` |
 
 ### Timer × ODR: taxa mínima sem perda
 
-Tag M33, BMI270 a 402/s real, `bench/sweep-tag.conf`:
+TAG M33, BMI270 a 402/s reais, `bench/sweep-tag.conf`, filtro na ISR (a
+coluna "amostras novas/s" é o `fresh/s`, que com o filtro é igual ao
+`queued/s`):
 
-| Período | xfers/s | fresh/s na fila | Perde amostras? |
+| Período do timer | Transações/s | Amostras novas/s | Perde amostras? |
 |---|---|---|---|
 | 2500 µs (400/s) | 400 | 400,0 | **sim, cerca de 2/s, sem rastro** |
 | 2475 µs (404/s) | 404 | 401,5 | limiar |
-| 2450 µs (408/s) | 408 | 402,6 | não (skipped 55 em 10 s) |
+| 2450 µs (408/s) | 408 | 402,6 | não (55 repetidas em 10 s) |
 | 2400 µs (416/s) | 416 | 401,4 | não |
 | 2200 µs (454/s) | 454 | 402,4 | não |
 
 Abaixo do ODR real o timer perde amostras em silêncio: o data-ready volta a
-subir antes da próxima leitura. Regra prática: timer ≥ ODR nominal × 1,05 a
-1,10.
+subir antes da próxima leitura. O medido é 1,5 % acima do ODR real (2 % do
+nominal) numa unidade; a regra de projeto é timer 5 a 10 % acima do ODR
+nominal, para cobrir a tolerância do oscilador do sensor.
 
 ### Teto do barramento
 
-Modo QUEUE, N = 64, fila 512, filtro na ISR.
+Modo QUEUE, N = 64, fila 512, filtro na ISR. As transações/s são a contagem
+de inícios; acima do teto ela pode continuar subindo com dados congelados,
+então a validade é julgada pelo conteúdo (Z variando).
 
-Tag M33, BMI270, 17 bytes a 8 MHz (`bench/bus-max-tag.conf`):
+TAG M33, BMI270, 17 bytes a 8 MHz (`bench/bus-max-tag.conf`):
 
-| Período | xfers/s | late_wraps |
-|---|---|---|
-| 40 / 25 / 20 µs | 24995 / 40006 / 49999 | 0 |
-| **19 µs** | **52632** | 0 |
-| ≤ 18 µs | 0 | o `START` chega com a SPIM ocupada (17 µs + START + CSN ≈ 18,5 µs) e ela para |
+| Período | Transações/s | late_wraps | Dados |
+|---|---|---|---|
+| 40 / 25 / 20 µs | 24995 / 40006 / 49999 | 0 | válidos |
+| **19 µs** | **52632** | 0 | válidos |
+| 18 / 17 / 16 µs | 0 contando `STARTED`; 55548 / 58821 / 62496 contando `DMA.RX.READY` | 0 | congelados (Z fixo): o `START` chega com a SPIM ocupada, 17 µs + START + CSN ≈ 18,5 µs |
 
 Thingy:53 M33, ADXL362, 11 bytes a 8 MHz (`bench/bus-64k-thingy.conf`):
 
-| Período | xfers/s | late_wraps |
-|---|---|---|
-| 25 / 20 / 16 µs | 40013 / 50005 / 62493 | 0 |
-| 15 µs | 66667 | 0 (duas passagens) |
-| **14 µs** | **71451** | 0 (duas passagens); dados válidos (Z varia de −11,9 a −4,3 m/s²) |
-| 12 / 11 / 10 µs | 83335 / 90904 / 99991 STARTs | 0, mas **dados inválidos**: Z fixo em −11,10 (a transação de 11 bytes não termina; no nRF5340 o `START` durante a transação reinicia a SPIM) |
+| Período | Transações/s | late_wraps | Dados |
+|---|---|---|---|
+| 25 / 20 / 16 µs | 40013 / 50005 / 62493 | 0 | válidos |
+| 15 µs | 66667 | 0 (duas passagens) | válidos |
+| **14 µs** | **71451** | 0 (duas passagens) | válidos (Z de −11,9 a −4,3 m/s²) |
+| 12 / 11 / 10 µs | 83335 / 90904 / 99991 | 0 | **congelados** (Z fixo em −11,10): o `START` durante a transação reinicia a SPIM e a rajada de 11 bytes nunca termina |
 
-`xfers` conta `STARTED` (`DMA.RX.READY` no nRF54L), não transações completas: acima do teto a contagem
-continua subindo enquanto o EasyDMA nunca entrega uma rajada inteira. O
-teto real é o barramento (11 bytes + `START` + CSN ≈ 12,3 µs → 14 µs é o
-último período com dados válidos, 71,4 k/s). O wrap do anel não limita:
-a ISR escreve o `RXD.PTR` logo após o início da última transação do ciclo
-e tem um período inteiro de margem, até o próximo `START` (ver Achados).
+O teto real é o barramento: 11 bytes + `START` + CSN ≈ 12,5 µs, e 14 µs é o
+último período com dados válidos (71,4 k/s). O wrap do anel não limita: a
+ISR escreve o `RXD.PTR` logo após o início da última transação do ciclo e
+tem um período de prazo, até o próximo `START` (ver Achados). Nesses benches
+com N = 64 o core dorme entre blocos; o wrap passou porque 19 µs e 14 µs são
+maiores que a latência de wake-up de cada SoC (17 µs no M33 do nRF54L15,
+nenhuma RRAM no nRF5340).
 
-Tag FLPR com `hfxo_launcher` (`bench/bus-max-tag.conf`): 25058 / 40097 /
+TAG FLPR com `hfxo_launcher` (`bench/bus-max-tag.conf`): 25058 / 40097 /
 50117 / 52759 transações por segundo de 40 a 19 µs, `late_wraps` 0, sem
-zero-latency IRQ; a 18, 17 e 16 µs os `DMA.RX.READY` continuam a ser
-contados mas os dados congelam, como no M33.
+zero-latency IRQ; a 18, 17 e 16 µs a contagem de `DMA.RX.READY` continua mas
+os dados congelam, igual ao M33 com o mesmo evento.
 
 ### M33 × FLPR: latência do wrap e uma interrupção por amostra
 
@@ -216,18 +235,20 @@ transação custa uma ISR de wrap (a cada 2), uma ISR de EGU, um `k_msgq_put`
 e um `k_msgq_get`. Latência = do `COMPARE` do trigger até a ISR de wrap
 (inclui DPPI → `START` → `DMA.RX.READY` → DPPI → contador → IRQ).
 
-| Configuração | Latência com o core em idle (avg / max) | Latência com o core acordado | N = 1 sem `late_wraps` até |
+| Configuração | Latência, core em idle (média / máx.) | Latência, core acordado | N = 1 sem `late_wraps` até |
 |---|---|---|---|
-| M33 padrão | 16,8 / 17,3 µs | 1,7–2,6 µs (≥ 40 k/s) | 50 k/s |
+| M33 padrão | 16,8 / 17,3 µs | 1,7–2,6 µs (o core deixa de dormir acima de ~40 k/s neste bench) | 50 k/s |
 | M33 contando `STARTED` | 17,3 / 17,8 µs | 2,3–2,7 µs | 50 k/s |
-| M33 + constant latency | 16,8 / 17,1 µs | 1,7 µs | 50 k/s |
+| M33 + constant latency | 16,8 / 17,1 µs (não resolve) | 1,7 µs | 50 k/s |
 | M33 + RRAM standby | **2,75 / 2,93 µs** | 1,7–2,3 µs | 50 k/s |
-| FLPR | **2,43 / 2,50 µs**, constante | idem | 40 k/s; a 50 k/s 50086 `late_wraps` em 5 s (core saturado; `dropped` 0) |
+| FLPR | **2,43 / 2,50 µs** | 2,43 µs, constante | 40 k/s; a 50 k/s 50086 `late_wraps` em 5 s (core saturado; `dropped` 0) |
 
 Logs: `test-logs/u_tag_n1_m33.log`, `u_tag_n1_m33_started.log`,
 `u_tag_n1_m33_constlat.log`, `u_tag_n1_m33_rramstandby.log`,
-`u_tag_n1_flpr.log`, `u_tag_busmax_flpr.log`. Interpretação no
-[README da raiz](../README.md#nrf54l15-cortex-m33--flpr-risc-v).
+`u_tag_n1_flpr.log`, `u_tag_busmax_flpr.log`. Conclusão: os 17 µs são a RRAM
+em power-down (Achado 2); só importam para prazos abaixo de ~18 µs com o core
+dormindo entre eventos. Interpretação completa no
+[README da raiz](../README.md#prazo-do-wrap--wake-up-do-core).
 
 ## Detalhes de implementação
 
@@ -248,37 +269,36 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
    FLPR não tem clock control no NCS 3.4.1, por isso o `hfxo_launcher`.
 2. **Latência de 17 µs do M33 em idle = wake-up da RRAM.** Com o core em
    idle a RRAM entra em power-down (padrão do `RRAMC`) e a primeira
-   instrução da ISR espera `tIDLE2CPU` = 13 µs; medido 16,8 µs até a ISR de
-   wrap contra 2 µs com o core acordado. Constant latency sozinho não
+   instrução da ISR espera `tIDLE2CPU` = 13 µs (D); medido 16,8 µs até a ISR
+   de wrap contra 2 µs com o core acordado. Constant latency sozinho não
    resolve; RRAM em standby (`APP_RRAM_STANDBY`) dá 2,75 µs constantes. O
    FLPR roda da RAM: 2,43 µs sem configurar nada. Só importa para prazos de
    ISR abaixo de ~18 µs com o core dormindo entre eventos; nas taxas
-   medidas não houve `late_wraps`.
-2. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
-   (nRF54L), não após `END`**. No nRF54L o `DMA.RX.READY` é o evento que o
+   medidas não houve `late_wraps`. O nRF5340 não tem RRAM nem esse efeito.
+3. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
+   (nRF54L), nunca após `END`**. No nRF54L o `DMA.RX.READY` é o evento que o
    datasheet define para isso ("EasyDMA armazenou .PTR e .MAXCNT, permitindo
    escrevê-los para a próxima sequência"); a nrfx o chama de `RXSTARTED`. O
    `RXD.PTR` é double-buffered e o hardware o reescreve a cada `START`; o
    datasheet só garante a escrita pela CPU "imediatamente após STARTED".
-   A primeira versão contava `END` e escrevia o ponteiro entre o `END` e o
-   `START` seguinte: com 2 a 4 µs de janela (15 µs de período a 8 MHz) a
-   escrita coincidia às vezes com a atualização do hardware, o ponteiro
-   ficava corrompido e o EasyDMA escrevia fora do anel (MPU/BUS fault em
-   cerca de 1,5 s, reproduzível; `late_wraps` de 2555 num build e fault
-   noutro só pela fase da ISR). Contando `STARTED`, a escrita tem um
-   período inteiro de margem: zero `late_wraps` até 100 k STARTs/s.
-   Histórico da versão anterior: a 64 k/s a ISR tinha cerca de 14 µs para
-   reposicionar `RXD.PTR`. Uma ISR comum com `k_msgq_put` em loop perdia o
-   prazo e o EasyDMA escrevia fora do anel (hard fault). Solução: anel de
-   3N, wrap em ISR zero-latency (`IRQ_DIRECT_CONNECT`), fila via EGU e o
-   contador `late_wraps`.
-3. **`fresh` acima do ODR** com leituras espaçadas menos de cerca de 100 µs:
+   Uma versão anterior contava `END` e escrevia o ponteiro entre o `END` e
+   o `START` seguinte, com 2 a 4 µs de janela a 15 µs de período: a escrita
+   coincidia às vezes com a atualização do hardware, o ponteiro ficava
+   corrompido e o EasyDMA escrevia fora do anel (MPU/BUS fault reproduzível
+   no nRF5340; 2555 `late_wraps` num build e fault noutro, só pela fase da
+   ISR). O desenho atual, contando inícios, dá um período de prazo, com anel
+   de 3N slots, wrap em ISR zero-latency no M33, fila via EGU e o contador
+   `late_wraps`: zero `late_wraps` até 71,4 k/s no nRF5340 e 52,6 k/s no
+   nRF54L15 (M).
+4. **`fresh` acima do ODR** com leituras espaçadas menos de cerca de 100 µs:
    o sensor demora a limpar o bit depois da leitura (Thingy a 25 µs: 534
-   "fresh"/s para 380 reais). O filtro é uma heurística; a taxa real é o
-   ODR.
-4. **Log deferred trava na varredura**: a bancada usa `LOG_MODE_IMMEDIATE`,
+   "fresh"/s para ≈ 380 reais). O filtro é uma heurística; a taxa real é o
+   ODR. Com `APP_QUEUE_FRESH_ONLY` a 10 kHz (100 µs) o filtro ainda acerta
+   (fresh 402 na TAG); abaixo disso a fila recebe repetidas marcadas como
+   novas.
+5. **Log deferred trava na varredura**: a bancada usa `LOG_MODE_IMMEDIATE`,
    `LOG_BACKEND_RTT_MODE_DROP` e pilha do log em 2048 bytes.
-5. **Sysbuild**: `-D<imagem>_CONFIG_X=y` só para símbolos Kconfig; um Kconfig
+6. **Sysbuild**: `-D<imagem>_CONFIG_X=y` só para símbolos Kconfig; um Kconfig
    novo pede `-p always`; strings via `.conf`. Trocar o `vpr_launcher` exige
    `SB_CONFIG_VPR_LAUNCHER=n` e `ExternalZephyrProject_Add` no
    `sysbuild.cmake` do app.

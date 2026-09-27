@@ -293,17 +293,18 @@ def b1_blocks_int():
     d.box("dppi", 436, Y1, 112, BH, ["DPPI", "canal 0", "EEP → TEP"])
     d.box("spim", 606, Y1, 172, BH, ["SPIM (CSN por HW)", "TASKS_START", "EasyDMA TX/RX"], OK, OK_TINT)
     d.box("ram", 838, Y1, 98, BH, ["RAM", "rajada", "STATUS..Z"], OK, OK_TINT)
-    d.box("cnt", 606, Y2, 172, BH, ["TIMER (contador)", "TASKS_COUNT ← END", "CC0 = N, CC1 = 2N"])
+    d.box("cnt", 596, Y2, 192, BH, ["TIMER (contador)", "COUNT ← STARTED (nRF5340)", "ou DMA.RX.READY (nRF54L)",
+                                     "CC0 = N+1, CC1 = 2N, CC2 = 1"])
     d.box("egu", 340, Y2, 112, BH, ["EGU", "TRIGGER0/1", "→ ISR da fila"], OFF, OFF_TINT)
-    d.box("cpu", 24, Y2, 156, BH, ["CPU", "ISR ZLI: wrap do PTR", "ISR EGU: k_msgq_put ×N"], OFF, OFF_TINT)
+    d.box("cpu", 24, Y2, 200, BH, ["CPU", "ISR ZLI (COMPARE1): wrap do PTR", "ISR EGU: k_msgq_put ×N"], OFF, OFF_TINT)
     d.link("sensor", "gpiote", "pino INT")
     d.link("gpiote", "dppi", "evento", BLUE)
     d.link("dppi", "spim", "tarefa\nSTART", BLUE)
     d.link("spim", "ram", "DMA", OK)
-    d.link("spim", "cnt", "EVENTS_END → DPPI ch1 → COUNT", BLUE)
-    d.link("cnt", "egu", "COMPARE0/1 → DPPI ch2/3", BLUE)
+    d.link("spim", "cnt", "início de transação → DPPI", BLUE)
+    d.link("cnt", "egu", "COMPARE0/2 → DPPI → EGU", BLUE)
     d.link("egu", "cpu", "IRQ (modo QUEUE)", OFF)
-    d.caption(384, "Modo LATEST: só o caminho de cima existe; a CPU lê o buffer quando quiser (leitura dupla comparada).")
+    d.caption(384, "Modo LATEST: só o caminho de cima; o contador é opcional (só relata xfers); a CPU lê o buffer quando quiser (leitura dupla comparada).")
     d.caption(404, "Partida: 1 START por software depois de ligar o DPPI (o data-ready já está alto; é nível, não pulso).")
     d.save("blocos_caso1_sensor_int.svg", LEGEND_BLOCKS)
 
@@ -318,15 +319,16 @@ def b2_blocks_timer():
     d.box("spim", 606, Y1, 172, BH, ["SPIM (CSN por HW)", "TASKS_START", "EasyDMA TX/RX"], OK, OK_TINT)
     d.box("ram", 838, Y1, 98, BH, ["RAM", "rajada", "STATUS..Z"], OK, OK_TINT)
     d.box("sensor", 838, Y2, 98, BH, ["Sensor", "regs sempre", "com a última"], SLATE, PANEL)
-    d.box("cnt", 606, Y2, 172, BH, ["TIMER (contador)", "TASKS_COUNT ← END", "CC0 = N, CC1 = 2N"])
+    d.box("cnt", 596, Y2, 192, BH, ["TIMER (contador)", "COUNT ← STARTED (nRF5340)", "ou DMA.RX.READY (nRF54L)",
+                                     "CC0 = N+1, CC1 = 2N, CC2 = 1"])
     d.box("egu", 340, Y2, 112, BH, ["EGU", "TRIGGER0/1", "→ ISR da fila"], OFF, OFF_TINT)
-    d.box("cpu", 24, Y2, 156, BH, ["CPU", "ISR ZLI: wrap do PTR", "ISR EGU: filtra fresh, put"], OFF, OFF_TINT)
+    d.box("cpu", 24, Y2, 200, BH, ["CPU", "ISR ZLI (COMPARE1): wrap do PTR", "ISR EGU: filtra fresh, put"], OFF, OFF_TINT)
     d.link("hfxo", "trig", "clock\nexato")
     d.link("trig", "dppi", "COMPARE0", BLUE)
     d.link("dppi", "spim", "tarefa\nSTART", BLUE)
     d.link("spim", "ram", "DMA", OK)
-    d.link("spim", "cnt", "EVENTS_END → DPPI ch1 → COUNT", BLUE)
-    d.link("cnt", "egu", "COMPARE0/1 → DPPI ch2/3", BLUE)
+    d.link("spim", "cnt", "início de transação → DPPI", BLUE)
+    d.link("cnt", "egu", "COMPARE0/2 → DPPI → EGU", BLUE)
     d.link("egu", "cpu", "IRQ (modo QUEUE)", OFF)
     d.caption(384, "Timer acima do ODR: amostras repetidas com STATUS.DATA_READY = 0, descartadas na ISR (APP_QUEUE_FRESH_ONLY).")
     d.caption(404, "Timer abaixo do ODR real: perde amostras sem rastro — manter 5–10 % acima do ODR nominal.")
@@ -391,7 +393,7 @@ def d2_timer():
 
 def d3_queue():
     d = Diagram("Modo QUEUE — EasyDMA array list em ping-pong, uma interrupção a cada N transações",
-                "N = 4 para caber no desenho; 2N slots + N de folga. O contador conta STARTED (DMA.RX.READY no nRF54L): o wrap do PTR é feito logo após o START do último slot",
+                "N = 4 no desenho; anel de 2N + N de folga. O contador conta inícios (STARTED / DMA.RX.READY); o wrap do PTR vem logo após o START do último slot",
                 12.0, ["SPIM STARTED / RX.READY (→ contador)", "contador (COUNT)", "RXD.PTR (array list)", "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1",
                        "ISR zero-latency (wrap)", "EGU → ISR da fila", "k_msgq"], LEGEND_TIMING)
     for k in range(11):
@@ -405,7 +407,7 @@ def d3_queue():
         d.block("RXD.PTR (array list)", t + 0.08, t + 0.9, s, OK if a else BLUE, OK_TINT if a else BLUE_TINT)
     d.pulse("COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 4.1, 4.2, WARN, "COMPARE0 (N+1)")
     d.pulse("COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 7.1, 7.2, WARN, "COMPARE1 (2N, +CLEAR)")
-    d.pulse("COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 8.1, 8.2, WARN, "COMPARE2 (1)")
+    d.pulse("COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 8.1, 8.2, WARN, "COMPARE2 (1)", label_side="right")
     d.pulse("ISR zero-latency (wrap)", 7.15, 7.4, OFF, "PTR = A0 com B3 em curso: um período inteiro de folga", label_side="right")
     d.pulse("EGU → ISR da fila", 4.2, 4.9, OFF, "bloco A completo → 4× k_msgq_put", label_side="right")
     d.pulse("EGU → ISR da fila", 8.2, 8.9, OFF, "bloco B completo → 4× k_msgq_put", label_side="right")
@@ -419,7 +421,7 @@ def d3_queue():
 def d4_bus_limit():
     d = Diagram("Teto do barramento — quando o período do timer é menor que a transação",
                 "Tag: 17 B a 8 MHz = 17 µs + START + CSNDUR ≈ 18,5 µs; a 19 µs cabe (52,6 k/s), a 18 µs o START chega com a SPIM ocupada",
-                6.0, ["TIMER (19 µs)", "SPIM ocupada", "TIMER (18 µs)", "SPIM ocupada "], LEGEND_TIMING)
+                6.0, ["TIMER (19 µs)", "SPIM ocupada", "TIMER (18 µs)", "SPIM ocupada ", "SPIM ocupada  "], LEGEND_TIMING)
     for k in range(3):
         t = 0.3 + k * 1.9
         d.pulse("TIMER (19 µs)", t, t + 0.05)
@@ -429,7 +431,8 @@ def d4_bus_limit():
         t = 0.3 + k * 1.8
         d.pulse("TIMER (18 µs)", t, t + 0.05, WARN if k else BLUE)
     d.block("SPIM ocupada ", 0.35, 2.15, "≈ 18,5 µs")
-    d.note(3.4, "SPIM ocupada ", "START durante a transação: ignorado; medido 0 transações/s a 18 µs (a SPIM não retoma)", OFF)
+    d.note(3.4, "SPIM ocupada ", "START com a SPIM ocupada: no nRF54L15 ela para (contando STARTED a contagem fica em 0;", OFF)
+    d.note(3.4, "SPIM ocupada  ", "contando DMA.RX.READY continua, com dados congelados); no nRF5340 a transação reinicia", OFF)
     d.save("teto_barramento.svg")
 
 
@@ -463,25 +466,27 @@ def d5_oversampling():
 def d6_adxl382():
     """Expected timing for the ADXL382 at 64 kHz ODR, data-ready driven (case 1 at the maximum rate)."""
     P = 15.625  # us, 64 kHz
-    d = Diagram("Caso ADXL382 — data-ready a 64 kHz (INT0 → GPIOTE → DPPI → SPIM), esperado",
-                "Período 15,6 µs; rajada STATUS0..ZDATA_L = 1 + 10 bytes: 11 µs a 8 MHz (86 % do barramento) ou 5,5 µs a 16 MHz (SPIM4 do nRF5340)",
+    d = Diagram("Caso ADXL382 a 64 kHz (INT0 → GPIOTE → DPPI → SPIM) — não testado em hardware, esperado",
+                "Período 15,6 µs; 11 B por amostra: 12,5 µs a 8 MHz (80 %), 7 µs a 16 MHz (45 %, SPIM4 nRF5340), 4,25 µs a 32 MHz (27 %, SPIM00 nRF54L15)",
                 3 * P + 4, ["amostra ADXL382 (64 kHz)", "INT0 (DATA_READY)", "GPIOTE IN → DPPI", "SPIM 8 MHz: 11 B",
-                            "SPIM 16 MHz: 11 B", "prazo do wrap (QUEUE)"], LEGEND_TIMING)
+                            "SPIM 16 MHz: 11 B", "SPIM 32 MHz: 11 B", "prazo do wrap (QUEUE)"], LEGEND_TIMING)
     for k in range(3):
         t = 1.0 + k * P
         d.pulse("amostra ADXL382 (64 kHz)", t, t + 0.3, SLATE, f"n+{k}")
         d.edge("INT0 (DATA_READY)", t, True)
-        d.level("INT0 (DATA_READY)", t, t + 1.5 + 11.0, True)
-        d.edge("INT0 (DATA_READY)", t + 12.5, False)
-        d.level("INT0 (DATA_READY)", t + 12.5, t + P, False)
+        d.level("INT0 (DATA_READY)", t, t + 0.5 + 12.5, True)
+        d.edge("INT0 (DATA_READY)", t + 13.0, False)
+        d.level("INT0 (DATA_READY)", t + 13.0, t + P, False)
         d.pulse("GPIOTE IN → DPPI", t + 0.1, t + 0.4)
-        d.block("SPIM 8 MHz: 11 B", t + 0.5, t + 1.5 + 11.0, "1,0 µs START + 11 µs")
-        d.block("SPIM 16 MHz: 11 B", t + 0.5, t + 1.5 + 5.5, "1,0 + 5,5 µs", BLUE, BLUE_TINT)
-    d.note(P + 8.5, "SPIM 8 MHz: 11 B", "folga ≈ 2 µs até o próximo START (medido no nRF5340: 71,4 k/s válidos com 11 B a 14 µs)", OK)
-    d.note(P + 8.5, "SPIM 16 MHz: 11 B", "folga ≈ 8 µs: margem para CSNDUR maior e para o jitter do ODR do sensor", BLUE)
+        d.block("SPIM 8 MHz: 11 B", t + 0.5, t + 0.5 + 12.5, "12,5 µs (11 B + START + CSN)")
+        d.block("SPIM 16 MHz: 11 B", t + 0.5, t + 0.5 + 7.0, "7 µs", BLUE, BLUE_TINT)
+        d.block("SPIM 32 MHz: 11 B", t + 0.5, t + 0.5 + 4.25, "4,25 µs", BLUE, BLUE_TINT)
+    d.note(P + 8.5, "SPIM 8 MHz: 11 B", "80 % do barramento, ≈ 3 µs até o próximo START (nRF5340 medido: 71,4 k/s válidos com 11 B a 14 µs)", OK)
+    d.note(P + 8.5, "SPIM 16 MHz: 11 B", "45 %: margem para CSNDUR maior e para o jitter do ODR do sensor", BLUE)
+    d.note(P + 8.5, "SPIM 32 MHz: 11 B", "27 %: só na SPIM00 (domínio MCU, errata 8 sempre ativa: CPHA = 1 ou primeiro bit 0)", BLUE)
     d.pulse("prazo do wrap (QUEUE)", 1.0 + P + 0.5, 1.0 + 2 * P + 0.3, OFF,
-            "RX.READY/STARTED do slot 2N−1 → START seguinte: um período (15,6 µs), qualquer que seja o SCK", amp=14)
-    d.note(P + 8.5, "prazo do wrap (QUEUE)", "wrap logo após STARTED (nRF5340) ou DMA.RX.READY (nRF54L), ISR zero-latency no M33; LATEST não tem prazo", OFF)
+            "prazo = um período (15,6 µs), qualquer que seja o SCK", amp=14)
+    d.note(P + 8.5, "prazo do wrap (QUEUE)", "nRF5340: ZLI basta (medido 71,4 k/s a 14 µs); nRF54L15: RRAM standby ou FLPR (wake-up 17 µs > 15,6 µs); LATEST não tem prazo", OFF)
     d.marker(1.0, "15,6 µs")
     d.marker(1.0 + P, "")
     d.save("caso_adxl382_64k.svg")
@@ -533,8 +538,9 @@ def c1_m33_vs_flpr():
         (INK, True, "Quando importa"),
         (SLATE, False, "Só se um prazo de ISR for < ~18 µs com o core"),
         (SLATE, False, "dormindo entre eventos: wrap a > 55 k/s."),
-        (SLATE, False, "Medido: zero late_wraps até 52,6 k/s (M33"),
-        (SLATE, False, "padrão), porque acima de 40 k/s o core não dorme."),
+        (SLATE, False, "Bench N = 64 (bus-max): zero late_wraps até"),
+        (SLATE, False, "52,6 k/s com o core dormindo entre blocos,"),
+        (SLATE, False, "porque o período (19 µs) > wake-up (17 µs)."),
         (INK, True, "Teto com uma IRQ por amostra (N = 1)"),
         (SLATE, False, "M33: 50 k/s sem atraso.  FLPR: 40 k/s; a 50 k/s"),
         (SLATE, False, "todos os wraps atrasam (core saturado)."),
@@ -550,100 +556,72 @@ def c1_m33_vs_flpr():
     print("wrote m33_vs_flpr_nrf54l15.svg")
 
 
-def c2_spim_domains_vs_rate():
-    """Line chart: modelled SoC current vs sample rate for SPIM30 / SPIM22 / SPIM00, LATEST and QUEUE (docs/POWER.md)."""
+def c3_consumo_modos():
+    """Small multiples: modelled SoC current per consumption mode (LATEST, QUEUE N=64, QUEUE N=1), SPIM instance and rate."""
     import math
-    h = 520
-    rates = [100, 400, 1600, 6400, 16000, 32000, 64000]
-    DASH = {"solid": "", "dash": " stroke-dasharray='6 4'", "dot": " stroke-dasharray='1.5 3.5'"}
-    series = [  # name, values (uA), color, style, short tag for the end label
-        ("SPIM30 LATEST", [8, 9, 13, 28, 57, 106, 205], OK, "solid", "LATEST"),
-        ("SPIM22 LATEST", [23, 24, 28, 43, 72, 121, 220], BLUE, "solid", "LATEST"),
-        ("SPIM00 LATEST", [323, 324, 327, 340, 366, 410, 497], OFF, "solid", "LATEST"),
-        ("SPIM30 QUEUE por tempo", [9, 13, 28, 88, 207, 406, 805], OK, "dot", "Q tempo"),
-        ("SPIM22 QUEUE por tempo", [24, 28, 43, 103, 222, 421, 820], BLUE, "dot", "Q tempo"),
-        ("SPIM30 QUEUE", [150, 154, 169, 229, 348, 547, 946], OK, "dash", "Q contador"),
-        ("SPIM22 QUEUE", [145, 149, 164, 224, 343, 542, 941], BLUE, "dash", "Q contador"),
-        ("SPIM00 QUEUE", [445, 449, 463, 521, 637, 831, 1218], OFF, "dash", "Q contador"),
+    h = 560
+    rates = ["400", "1 500", "16 000", "50 000"]
+    inst = [("SPIM30", OK), ("SPIM22", BLUE), ("SPIM00", OFF)]
+    panels = [
+        ("LATEST (só o valor atual)", [[9, 24, 324], [13, 28, 327], [57, 72, 366], [162, 177, 459]]),
+        ("QUEUE N = 64", [[154, 149, 449], [168, 163, 462], [348, 343, 637], [771, 766, 1048]]),
+        ("QUEUE N = 1", [[172, 167, 467], [236, 231, 530], [1072, 1067, 1361], [1343, 1338, 1620]]),
     ]
     p = [defs(), "<rect width='100%' height='100%' fill='white'/>",
-         header("nRF54L15 — corrente média do SoC × amostras/s por instância de SPIM (modelo de docs/POWER.md)",
-                "Caso 1 (data-ready), rajada de 11 bytes, 8 MHz nas SPIM2x/30 e 32 MHz na SPIM00; LATEST sem contador, QUEUE com N = 64 e contador TIMER21 em PERI")]
-    ax, ay, aw, ah = 84, 96, 600, 330
-    xmin, xmax = math.log10(100), math.log10(64000)
+         header("nRF54L15 — corrente média do SoC por modo de consumo, instância de SPIM e taxa (modelo, sem PPK2)",
+                "INT, 11 B por rajada, M33 padrão. LATEST não entrega todas as amostras; N = 1 paga 13 µs de wake-up da RRAM por amostra até ~25 k/s")]
     ymin, ymax = math.log10(5), math.log10(2000)
-
-    def X(r):
-        return ax + aw * (math.log10(r) - xmin) / (xmax - xmin)
+    ay, ah = 112, 250
+    pw, gap, x0 = 276, 26, 54           # panel width, gap between panels, left origin (after the y labels)
+    ticks = [10, 100, 1000]
 
     def Y(v):
         return ay + ah - ah * (math.log10(v) - ymin) / (ymax - ymin)
 
-    for v in (10, 100, 1000):
-        p.append(f"<line x1='{ax}' y1='{Y(v):.1f}' x2='{ax+aw}' y2='{Y(v):.1f}' stroke='{LINE}' stroke-width='1'/>")
-        p.append(f"<text x='{ax-8}' y='{Y(v)+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v} µA</text>")
-        for m in (2, 5):
-            vv = v * m
-            if vv < 2000:
-                p.append(f"<line x1='{ax}' y1='{Y(vv):.1f}' x2='{ax+aw}' y2='{Y(vv):.1f}' stroke='{LINE}' stroke-width='0.6' stroke-dasharray='2 4'/>")
-    for r in rates:
-        p.append(f"<line x1='{X(r):.1f}' y1='{ay}' x2='{X(r):.1f}' y2='{ay+ah}' stroke='{LINE}' stroke-width='0.6' stroke-dasharray='2 4'/>")
-        lab = f"{r//1000} k" if r >= 1000 else str(r)
-        p.append(f"<text x='{X(r):.1f}' y='{ay+ah+16}' text-anchor='middle' fill='{SLATE}' {font(10.5)}>{lab}</text>")
-    p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+aw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
-    p.append(f"<line x1='{ax}' y1='{ay}' x2='{ax}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
-    p.append(f"<text x='{ax+aw/2:.1f}' y='{ay+ah+34}' text-anchor='middle' fill='{INK}' {font(11, bold=True)}>amostras por segundo (escala log)</text>")
-    p.append(f"<text x='20' y='{ay-12}' fill='{INK}' {font(11, bold=True)}>corrente média (escala log)</text>")
-    # cut-off: above ~10 k/s the wrap deadline needs the hardware counter (TIMER in PERI)
-    xc = X(10000)
-    p.append(f"<rect x='{xc:.1f}' y='{ay}' width='{ax+aw-xc:.1f}' height='{ah}' fill='{WARN_TINT}' opacity='0.55'/>")
-    p.append(f"<line x1='{xc:.1f}' y1='{ay}' x2='{xc:.1f}' y2='{ay+ah}' stroke='{WARN}' stroke-width='1.4' stroke-dasharray='5 3'/>")
-    p.append(f"<text x='{xc+6:.1f}' y='{ay+14}' fill='{WARN}' {font(10.5, bold=True)}>{esc('≥ ~10 k/s: QUEUE só com contador em hardware')}</text>")
-    p.append(f"<text x='{xc+6:.1f}' y='{ay+28}' fill='{WARN}' {font(10)}>{esc('(prazo do wrap: um período; a CPU por amostra domina)')}</text>")
-    p.append(f"<text x='{xc-6:.1f}' y='{ay+14}' text-anchor='end' fill='{OK}' {font(10.5, bold=True)}>{esc('≤ ~10 k/s: QUEUE por tempo (GRTC, sem TIMER)')}</text>")
-    p.append(f"<text x='{xc-6:.1f}' y='{ay+28}' text-anchor='end' fill='{OK}' {font(10)}>{esc('≈ LATEST + CPU por amostra')}</text>")
-    for name, vals, col, style, _tag in series:
-        pts = " ".join(f"{X(r):.1f},{Y(v):.1f}" for r, v in zip(rates, vals))
-        p.append(f"<polyline points='{pts}' fill='none' stroke='{col}' stroke-width='{1.8 if style == 'dot' else 2.2}'{DASH[style]}/>")
-        for r, v in zip(rates, vals):
-            p.append(f"<circle cx='{X(r):.1f}' cy='{Y(v):.1f}' r='3' fill='white' stroke='{col}' stroke-width='1.8'/>")
-    # LATEST never delivers every sample: say it on the curves themselves
-    p.append(f"<text x='{X(400):.1f}' y='{Y(8)+22:.1f}' fill='{INK}' {font(10.5, bold=True)}>{esc('LATEST = só o valor atual, em qualquer taxa')}</text>")
-    p.append(f"<text x='{X(400):.1f}' y='{Y(8)+36:.1f}' fill='{SLATE}' {font(10)}>{esc('não há taxa em que LATEST entregue todas as amostras: para isso, QUEUE')}</text>")
-    # end values, stacked so that close pairs do not overlap
-    ends = sorted(((vals[-1], tag, col) for _n, vals, col, _s, tag in series), key=lambda t: t[0])
-    yy = None
-    for v, tag, col in ends:
-        y = Y(v)
-        if yy is not None and yy - y < 13:
-            y = yy - 13
-        p.append(f"<text x='{X(64000)+8:.1f}' y='{y+4:.1f}' fill='{col}' {font(10, bold=True)}>{v} {esc(tag)}</text>")
-        yy = y
-    # notes
-    bx, by, bw = 724, 300, W - 24 - 724
-    p.append(f"<rect x='{bx}' y='{by}' width='{bw}' height='126' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
-    notes = [(INK, True, "Menor consumo para uma taxa"),
-             (SLATE, False, "Só o valor atual: LATEST, SPIM30."),
-             (SLATE, False, "Todas as amostras, ≤ 10 k/s:"),
-             (SLATE, False, "QUEUE por tempo, SPIM30 (9–88 µA)."),
-             (SLATE, False, "Todas as amostras, > 10 k/s:"),
-             (SLATE, False, "QUEUE com contador; a instância"),
-             (SLATE, False, "só muda a folga do barramento.")]
-    y = by + 20
-    for col, bold, s in notes:
-        p.append(f"<text x='{bx+12}' y='{y}' fill='{col}' {font(10.5, bold=bold)}>{esc(s)}</text>")
-        y += 16
-    p.append(legend_svg(ax, h - 44, [(OK, "SPIM30 (LP, P0)"), (BLUE, "SPIM22 (PERI, P1)"), (OFF, "SPIM00 (MCU, P2, 32 MHz)")]))
-    p.append(f"<text x='{ax}' y='{h-16}' fill='{SLATE}' {font(10)}>{esc('cheia = LATEST; pontilhada = QUEUE drenado por tempo (GRTC, sem TIMER; modelo, não implementado no repo); tracejada = QUEUE com contador TIMER (N = 64, implementado). Premissas: PERI 20 µA, LP 5 µA, MCU 300 µA, SPIM 0,25 / 0,8 mA, CPU 3,6 µs/amostra. Sem PPK2.')}</text>")
+    for i, (title, data) in enumerate(panels):
+        ax = x0 + i * (pw + gap)
+        p.append(f"<rect x='{ax}' y='{ay}' width='{pw}' height='{ah}' fill='{ZEBRA}' rx='4'/>")
+        p.append(f"<text x='{ax + pw/2:.1f}' y='{ay-20}' text-anchor='middle' fill='{INK}' {font(12, bold=True)}>{esc(title)}</text>")
+        for v in ticks:
+            p.append(f"<line x1='{ax}' y1='{Y(v):.1f}' x2='{ax+pw}' y2='{Y(v):.1f}' stroke='{LINE}' stroke-width='1'/>")
+            if i == 0:
+                p.append(f"<text x='{ax-6}' y='{Y(v)+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v} µA</text>")
+            for m in (2, 5):
+                if v * m < 2000:
+                    p.append(f"<line x1='{ax}' y1='{Y(v*m):.1f}' x2='{ax+pw}' y2='{Y(v*m):.1f}' stroke='{LINE}' stroke-width='0.6' stroke-dasharray='2 4'/>")
+        p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+pw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
+        gw = pw / len(rates)               # group width
+        bw = 16                            # bar width
+        for g, (rate, vals) in enumerate(zip(rates, data)):
+            gx = ax + g * gw + (gw - 3 * bw - 2 * 3) / 2
+            for k, ((name, col), v) in enumerate(zip(inst, vals)):
+                x = gx + k * (bw + 3)
+                y = Y(v)
+                p.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw}' height='{ay + ah - y:.1f}' rx='2' fill='{col}' opacity='0.9'/>")
+                # value label: rotated so that three labels fit above 16 px bars
+                p.append(f"<text transform='translate({x + bw/2 + 3:.1f},{y - 4:.1f}) rotate(-90)' fill='{col}' {font(9.5, bold=True)}>{v}</text>")
+            p.append(f"<text x='{ax + g * gw + gw/2:.1f}' y='{ay+ah+15}' text-anchor='middle' fill='{INK}' {font(10.5)}>{esc(rate)}</text>")
+        p.append(f"<text x='{ax + pw/2:.1f}' y='{ay+ah+30}' text-anchor='middle' fill='{SLATE}' {font(10)}>amostras por segundo</text>")
+    p.append(f"<text x='20' y='{ay-10}' fill='{SLATE}' {font(10)}>{esc('µA, log')}</text>")
+    p.append(legend_svg(x0, ay + ah + 54, [(OK, "SPIM30 (LP, P0)"), (BLUE, "SPIM22 (PERI, P1)"), (OFF, "SPIM00 (MCU, P2, 32 MHz)")]))
+    # reading box
+    bx, by, bw2 = x0, ay + ah + 66, W - 24 - x0
+    p.append(f"<rect x='{bx}' y='{by}' width='{bw2}' height='78' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
+    p.append(f"<text x='{bx+12}' y='{by+18}' fill='{INK}' {font(11, bold=True)}>Leitura</text>")
+    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('Instância: diferença constante — SPIM30 economiza 15 µA só em LATEST; SPIM00 custa +300 µA sempre.')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('Modo: N = 1 × N = 64 é a maior alavanca acima de 1 k/s (a RRAM acorda a cada amostra).')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+67}' fill='{SLATE}' {font(10.5)}>{esc('Abaixo de 2 k/s manda o contador (121 µA), igual em N = 1 e N = 64.')}</text>")
+    p.append(f"<text x='{x0}' y='{h-24}' fill='{SLATE}' {font(9.5)}>{esc('Premissas: PERI ligado 20 µA (Academy), LP 5 µA (assumido), domínio MCU 300 µA (proxy TIMER00), SPIM ativa 0,25 mA (8 MHz) / 0,8 mA (32 MHz),')}</text>")
+    p.append(f"<text x='{x0}' y='{h-10}' fill='{SLATE}' {font(9.5)}>{esc('contador TIMER21 121 µA, CPU 3,6 µs (N = 64) ou 21 µs (N = 1, com 13 µs de wake-up da RRAM) por amostra a 2,6 mA. Sem medição PPK2.')}</text>")
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
-    with open(os.path.join(OUT, "consumo_vs_odr_spim_nrf54l15.svg"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(OUT, "consumo_modos_nrf54l15.svg"), "w", encoding="utf-8") as fh:
         fh.write(svg)
-    print("wrote consumo_vs_odr_spim_nrf54l15.svg")
+    print("wrote consumo_modos_nrf54l15.svg")
 
 
 if __name__ == "__main__":
     c1_m33_vs_flpr()
-    c2_spim_domains_vs_rate()
+    c3_consumo_modos()
     b1_blocks_int()
     b2_blocks_timer()
     d1_sensor_int()

@@ -2,31 +2,40 @@
 
 ## Visão geral
 
+**TL;DR: exemplo recomendado. Uma transação por amostra nova, sem TIMER de
+disparo e sem HFXO. Medido até 1600 Hz com zero perdas.**
+
 Este exemplo lê um acelerômetro SPI sem CPU no caminho da aquisição. O pino
 de data-ready do sensor é ligado a um evento GPIOTE IN. Esse evento, por
 DPPI, aciona o `TASKS_START` da SPIM. A SPIM controla o chip select por
-hardware e o EasyDMA entrega a rajada em RAM. Cada amostra nova gera exatamente
-uma transação.
+hardware e o EasyDMA entrega a rajada em RAM. Cada amostra nova gera
+exatamente uma transação, então transações/s = amostras/s.
 
 ```
 INT (data-ready) ──GPIOTE IN──DPPI──▶ SPIM.TASKS_START ──▶ EasyDMA (rajada, CSN por hardware)
-                                      SPIM.EVENTS_END ──DPPI──▶ TIMER (contador) ──▶ [IRQ por bloco]
+                                      SPIM.STARTED / DMA.RX.READY ──DPPI──▶ TIMER (contador) ──▶ [IRQ por bloco]
 ```
 
-Um segundo TIMER, em modo contador, conta os eventos `END` da SPIM. Ele serve
-de contador de transações e, no modo QUEUE, gera uma interrupção a cada N
-amostras. O consumo das amostras é escolhido por Kconfig:
+Um TIMER em modo contador conta os inícios de transação (`STARTED` no
+nRF5340, `DMA.RX.READY` no nRF54L). No modo QUEUE seus `COMPARE` geram a
+interrupção a cada N amostras; no modo LATEST ele fica ligado só para
+relatar a taxa no log e em produto pode sair. O consumo das amostras é
+escolhido por Kconfig:
 
-- **Modo LATEST**: buffer único, sem interrupções. A CPU lê o último valor.
-- **Modo QUEUE**: anel em ping-pong preenchido pelo EasyDMA em *array list*;
-  a cada N amostras uma ISR empurra o bloco para uma `k_msgq`.
+- **Modo LATEST**: buffer único, sem interrupções. A CPU lê o valor atual
+  (duas cópias comparadas, para não ler uma rajada no meio da escrita do
+  EasyDMA). Não entrega todas as amostras.
+- **Modo QUEUE**: anel de 3N slots preenchido pelo EasyDMA em *array list*;
+  a cada N amostras uma ISR empurra o bloco para uma `k_msgq`. Entrega todas.
 
-Este é o exemplo recomendado: não usa timer de disparo nem HFXO, não lê
+Este é o exemplo recomendado: não usa TIMER de disparo nem HFXO, não lê
 amostras repetidas, e a taxa de transações é exatamente o ODR do sensor. O
 exemplo [`timer_dppi_spim`](../timer_dppi_spim/README.md) é a alternativa
 para sensores sem pino de data-ready ou para taxa fixa independente do
-sensor. Os diagramas de blocos e de timing estão no
-[README da raiz](../README.md).
+sensor. Os termos (anel, wrap, `late_wraps`, `fresh`), os diagramas de
+blocos e de timing e o guia "Como escolher" estão no
+[README da raiz](../README.md). O engine `src/spim_dppi.c` é uma cópia
+idêntica do usado pelo `timer_dppi_spim`.
 
 ## Requisitos
 
@@ -66,7 +75,7 @@ O overlay da placa define tudo o que é específico do hardware por nós
 | `chosen` | Uso |
 |---|---|
 | `app,accel` | nó do acelerômetro. O barramento é o pai do nó; `cs-gpios` do barramento dá o pino de CSN; `int1-gpios` ou `irq-gpios` dá o pino de data-ready e a instância GPIOTE do port |
-| `app,timer-count` | TIMER usado como contador de `END` |
+| `app,timer-count` | TIMER usado como contador de inícios de transação (`STARTED` no nRF5340, `DMA.RX.READY` no nRF54L) |
 | `app,egu` | EGU que transforma os eventos de bloco em interrupção (modo QUEUE) |
 
 Na Thingy:53 o overlay move o ADXL362 da `spi3` para a `spi4` e acrescenta
@@ -111,8 +120,9 @@ Modo LATEST (TAG, BMI270 a 400 Hz):
 <inf> app: t=36000 ms xfers=14468 latest X=-0.75 Y=9.58 Z=-0.25 m/s^2 (fresh)
 ```
 
-`xfers` é o contador de `END` em hardware e avança no ODR do sensor. `fresh`
-indica que o bit de data-ready estava ativo na rajada.
+`xfers` é o contador de inícios de transação em hardware e avança no ODR do
+sensor. `fresh` indica que o bit de data-ready estava ativo na rajada (no
+caso 1 é sempre verdadeiro; serve de verificação).
 
 Modo QUEUE (TAG, BMI270 a 1600 Hz, N = 16):
 
@@ -123,27 +133,32 @@ Modo QUEUE (TAG, BMI270 a 1600 Hz, N = 16):
 
 `queued` é o número de amostras retiradas da fila no período. Um teste bem
 sucedido tem `queued = fresh`, `dropped = 0` e `late = 0`. `dropped` conta
-amostras que não couberam na fila; `late` conta wraps do anel feitos depois
-de a transação seguinte já ter começado (as amostras foram para a folga).
+amostras que não couberam na fila. `late` é o contador `late_wraps`: wraps
+do anel feitos depois de o `START` seguinte já ter ocorrido; essa transação
+foi para a folga do anel e o bloco entregue sai deslocado um slot (uma
+amostra velha no lugar da nova). Não corrompe memória, e o contador é a
+forma de detectar.
 
 ## Resultados
 
-Medidos em 2026-09-27 com log por RTT; os logs estão em `test-logs/`. Todos
-com `dropped = 0` e `late = 0`.
+Medidos (M) em 2026-09-27 com log por RTT; os logs estão em `test-logs/`.
+Todos com `dropped = 0` e `late = 0`. SCK: 4 MHz na Thingy:53 (default do
+Kconfig), 8 MHz na TAG (`boards/*.conf`).
 
 | Alvo | ODR | Modo LATEST | Modo QUEUE (N = 16) |
 |---|---|---|---|
-| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 380) | 380/s, fresh | 384/s, queued = fresh |
-| Tag M33 (BMI270) | 400 Hz | 402/s, fresh | 400/s, queued = fresh |
-| Tag M33 (BMI270) | **1600 Hz (máximo do sensor)** | — | **1601–1616/s, queued = fresh, 0 perdas** |
-| Tag FLPR (BMI270) | 400 Hz | 402/s | 400/s |
-| Tag FLPR (BMI270) | **1600 Hz** | — | **1601–1616/s, 0 perdas** |
+| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 380/s, 368–384 entre janelas) | ≈ 380/s, fresh | ≈ 380/s, queued = fresh |
+| TAG M33 (BMI270) | 400 Hz | 402/s, fresh | 400/s, queued = fresh |
+| TAG M33 (BMI270) | **1600 Hz (máximo do sensor)** | — | **1601–1616/s, queued = fresh, 0 perdas** |
+| TAG FLPR (BMI270) | 400 Hz | 402/s | 400/s |
+| TAG FLPR (BMI270) | **1600 Hz** | — | **1601–1616/s, 0 perdas** |
 
-O limite deste caminho é o barramento, não o disparo: 71,4 k/s medidos no
-nRF5340 com rajada de 11 bytes e 52,6 k/s na TAG com 17 bytes (ver
-[`timer_dppi_spim`](../timer_dppi_spim/README.md)). Abaixo disso a taxa é o
-ODR do sensor. O caso do ADXL382 a 64 kHz está no
-[README da raiz](../README.md).
+Acima do ODR dos sensores disponíveis o limite deste caminho é o barramento,
+não o disparo. Os tetos foram medidos com o exemplo de TIMER, porque nenhum
+sensor da bancada gera data-ready além de 1600 Hz: 52,6 k/s na TAG com
+17 bytes e 71,4 k/s na Thingy:53 com 11 bytes (ver
+[`timer_dppi_spim`](../timer_dppi_spim/README.md)). O caso do ADXL382 a
+64 kHz, não testado, está no [README da raiz](../README.md).
 
 ## Detalhes de implementação
 
@@ -161,15 +176,18 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
   usado no init. O GPIOTE IN é configurado sem handler (só evento). As
   ligações são feitas com `nrfx_gppi_conn_alloc` e `nrfx_gppi_conn_enable`.
   No modo QUEUE o EasyDMA usa `RX_POSTINC` (array list) sobre um anel de 3N
-  slots. O contador conta, por transação, o evento que libera o `.PTR`
-  (`DMA.RX.READY` no nRF54L, `STARTED` no nRF5340): `COMPARE1 = 2N` (início da
-  última transação do ciclo, short `CLEAR`) dispara a ISR zero-latency que
-  só reposiciona `RXD.PTR` para o slot 0, com um período inteiro de margem
-  (até o próximo `START`);
-  `COMPARE0 = N+1` e `COMPARE2 = 1` (bloco A e bloco B completos) vão por
-  DPPI para a EGU, cuja ISR faz o trabalho da fila. `late_wraps` conta os
-  wraps feitos depois de a transação seguinte já ter começado. Como o data-ready é um nível já ativo quando o
-  DPPI é ligado, um `START` por software lê e limpa a primeira amostra.
+  slots (bloco A, bloco B, folga). O contador conta inícios de transação
+  (`STARTED` no nRF5340, `DMA.RX.READY` no nRF54L, que a nrfx chama
+  `RXSTARTED`); quando a transação k começa o contador vale k+1, daí:
+  `COMPARE0 = N+1` (a transação N começou, o bloco A está completo) e
+  `COMPARE2 = 1` (a primeira transação do ciclo seguinte começou, o bloco B
+  está completo; ignorado no primeiro ciclo) vão por DPPI para a EGU, cuja
+  ISR faz o trabalho da fila; `COMPARE1 = 2N` (a última transação do ciclo
+  começou, short `CLEAR`) dispara a ISR zero-latency que só devolve
+  `RXD.PTR` ao slot 0, com um período de prazo, até o próximo `START`.
+  `late_wraps` conta os wraps feitos depois desse `START`. Como o data-ready
+  é um nível já ativo quando o DPPI é ligado, um `START` por software lê e
+  limpa a primeira amostra.
 - `src/main.c`: só relata. No modo LATEST imprime o último valor a cada
   período; no modo QUEUE consome a fila com `k_msgq_get`, uma amostra por
   vez, e imprime as estatísticas.
@@ -195,7 +213,7 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
    instância. Usar `GPIOTE_NRFX_INST_BY_NODE` e `nrfx_gpiote_channel_alloc`
    em vez de inicializar de novo.
 7. **O wrap do anel é feito logo após `STARTED` (nRF5340) ou `DMA.RX.READY`
-   (nRF54L), não após `END`**. O `DMA.RX.READY` do nRF54L é, pela definição
+   (nRF54L), nunca após `END`**. O `DMA.RX.READY` do nRF54L é, pela definição
    do datasheet, "gerado quando o EasyDMA armazenou os registradores .PTR e
    .MAXCNT, permitindo escrevê-los para a próxima sequência"; a nrfx o chama
    de `RXSTARTED` e o exemplo o seleciona com `NRF_SPIM_HAS_DMA_REG`. O
@@ -205,12 +223,11 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
    e escrevia o ponteiro entre o `END` e o `START` seguinte: a 15 µs de
    período a escrita da CPU coincidia às vezes com a atualização do
    hardware, o ponteiro ficava corrompido e o EasyDMA escrevia fora do anel
-   (MPU/BUS fault reproduzível). Contando `STARTED`, a escrita acontece com
-   a última transação do ciclo em curso e tem um período inteiro de
-   margem, até o próximo `START`; medido zero `late_wraps` até 100 k
-   STARTs/s. A ISR continua
-   zero-latency (`IRQ_DIRECT_CONNECT`) e o trabalho da fila vai para a EGU.
-   A 1600 Hz nada disso é crítico, mas o mecanismo é o mesmo.
+   (MPU/BUS fault reproduzível no nRF5340). Contando inícios, a escrita tem um
+   período de prazo, até o próximo `START`: zero `late_wraps` até 71,4 k/s
+   no nRF5340 e 52,6 k/s no nRF54L15 (M). A ISR de wrap é zero-latency
+   (`IRQ_DIRECT_CONNECT`) no M33 e o trabalho da fila vai para a EGU. A
+   1600 Hz nada disso é crítico, mas o mecanismo é o mesmo.
 8. **RTT**: o bloco de controle do firmware anterior fica na RAM, então o
    logger precisa do endereço de `_SEGGER_RTT` do ELF (`-RTTAddress`). O
    FLPR é lido pela conexão M33. Resetar antes de anexar.
