@@ -57,6 +57,8 @@ def defs():
             f"<path d='M0,0.5 L8,4.5 L0,8.5 z' fill='{OFF}'/></marker>"
             f"<filter id='shadow' x='-5%' y='-5%' width='110%' height='120%'>"
             f"<feDropShadow dx='0' dy='1.5' stdDeviation='1.5' flood-color='{NAVY}' flood-opacity='0.12'/></filter>"
+            f"<pattern id='hatch' width='6' height='6' patternUnits='userSpaceOnUse' patternTransform='rotate(45)'>"
+            f"<line x1='0' y1='0' x2='0' y2='6' stroke='{LINE}' stroke-width='2'/></pattern>"
             f"</defs>")
 
 
@@ -338,7 +340,7 @@ def b2_blocks_timer():
 # --------------------------------------------------------------------------- timing figures
 def d1_sensor_int():
     d = Diagram("Caso 1 — disparo pelo data-ready do sensor (INT → GPIOTE → DPPI → SPIM)",
-                "BMI270 na Tag a 400 Hz: 1 transação por amostra nova, CPU fora do caminho; escala ≈ 2,5 ms por período",
+                "BMI270 na TAG a 1 600 Hz: 1 transação por amostra nova, CPU fora do caminho; escala ≈ 625 µs por período (3 períodos no desenho)",
                 6.0, ["amostra no sensor", "INT1 (data-ready)", "GPIOTE IN event", "DPPI ch", "SPIM START/END",
                       "CSN (hardware)", "EasyDMA → RAM", "CPU"], LEGEND_TIMING)
     for k, t in enumerate([0.4, 2.9, 5.4]):
@@ -392,8 +394,8 @@ def d2_timer():
 
 
 def d3_queue():
-    d = Diagram("Anel EasyDMA em ping-pong — uma interrupção a cada N transações",
-                "N = 4 no desenho; anel de 2N slots + N de folga do anel. O contador conta inícios (STARTED / DMA.RX.READY); o wrap do PTR vem logo após o START do último slot",
+    d = Diagram("Anel de 3N slots: blocos A e B mais a folga — uma interrupção de bloco a cada N transações",
+                "N = 4 no desenho; bloco A, bloco B e N slots de folga do anel. O contador conta inícios (STARTED / DMA.RX.READY); o wrap do PTR vem logo após o START do último slot",
                 12.0, ["SPIM STARTED / RX.READY (→ contador)", "contador (COUNT)", "RXD.PTR (array list)", "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1",
                        "ISR zero-latency (wrap)", "EGU → ISR da fila", "k_msgq"], LEGEND_TIMING)
     for k in range(11):
@@ -415,7 +417,7 @@ def d3_queue():
     d.note(2.6, "ISR zero-latency (wrap)", "o hardware reescreve RXD.PTR a cada START; escrever perto do END colide com ele (fault)", WARN)
     d.arrow(7.15, "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 7.2, "ISR zero-latency (wrap)")
     d.arrow(4.15, "COMPARE0 = N+1 / COMPARE1 = 2N / COMPARE2 = 1", 4.25, "EGU → ISR da fila", "DPPI → EGU.TRIGGER0")
-    d.save("modo_queue_pingpong.svg")
+    d.save("anel_3n.svg")
 
 
 def d4_bus_limit():
@@ -497,7 +499,7 @@ def c1_m33_vs_flpr():
     h = 470
     p = [defs(), f"<rect width='100%' height='100%' fill='white'/>",
          header("nRF54L15 — Cortex-M33 × FLPR (RISC-V): latência da ISR de wrap e teto com uma IRQ por amostra",
-                "Bench N = 1 na nRF54L15 TAG (timer_dppi_spim, APP_WRAP_LATENCY_STATS): do COMPARE do trigger até a ISR; média e máximo por configuração")]
+                "Bancada N = 1 na nRF54L15 TAG (timer_dppi_spim, APP_WRAP_LATENCY_STATS): do COMPARE do trigger até a ISR; média e máximo por configuração")]
     # ---- panel A: latency bars
     ax, ay, aw, ah = 60, 100, 540, 260
     ymax = 20.0
@@ -534,16 +536,16 @@ def c1_m33_vs_flpr():
         (SLATE, False, "Core em idle: a RRAM fica em power-down e"),
         (SLATE, False, "a 1ª instrução da ISR espera 13 µs (tIDLE2CPU)."),
         (SLATE, False, "Constant latency sozinho não muda isso."),
-        (SLATE, False, "RRAM em standby ou FLPR (RAM): 2,4–2,8 µs."),
+        (SLATE, False, "RRAM em standby: 2,75 µs. FLPR (RAM): 2,43 µs."),
         (INK, True, "Quando importa"),
         (SLATE, False, "Só se um prazo de ISR for < ~18 µs com o core"),
-        (SLATE, False, "dormindo entre eventos: wrap a > 55 k/s."),
-        (SLATE, False, "Bench N = 64 (bus-max): zero late_wraps até"),
+        (SLATE, False, "dormindo entre eventos: período < 18 µs (≈ 55 k/s)."),
+        (SLATE, False, "Bancada N = 64 (bus-max): zero late_wraps até"),
         (SLATE, False, "52,6 k/s com o core dormindo entre blocos,"),
         (SLATE, False, "porque o período (19 µs) > wake-up (17 µs)."),
         (INK, True, "Teto com uma IRQ por amostra (N = 1)"),
-        (SLATE, False, "M33: 50 k/s sem atraso. FLPR: 40 k/s; a 50 k/s"),
-        (SLATE, False, "todos os wraps atrasam (core saturado)."),
+        (SLATE, False, "M33: 50 k/s sem atraso (máximo varrido). FLPR: 40 k/s;"),
+        (SLATE, False, "a 50 k/s ≈ 40 % dos wraps atrasam (core saturado)."),
     ]
     y = by + 22
     for col, bold, s in lines:
@@ -566,7 +568,7 @@ def c3_consumo_modos():
         ("N = 64 (uma IRQ a cada 64 amostras)", [[165, 465], [352, 656], [794, 1108]]),
         ("N = 1 (uma IRQ por amostra), M33 padrão", [[236, 536], [1068, 1372], [1340, 1654]]),
     ]
-    standby = [182, 527, 1340]   # N = 1, SPIM22, RRAM em standby ou FLPR: 8 us por amostra
+    standby = [182, 527, 1340]   # N = 1, SPIM22, M33 com RRAM em standby: 8 us por amostra
     p = [defs(), "<rect width='100%' height='100%' fill='white'/>",
          header("nRF54L15 — corrente média do SoC por N, instância de SPIM e taxa (modelo E, sem PPK2)",
                 "Caso 1 (data-ready), 11 B por rajada, toda amostra vai para a fila; SPIM22 a 8 MHz, SPIM00 a 32 MHz; Cortex-M33 padrão (RRAM em power-down)")]
@@ -588,8 +590,8 @@ def c3_consumo_modos():
                 p.append(f"<text x='{ax-6}' y='{Y(v)+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v} µA</text>")
         p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+pw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
         gw = pw / len(rates)
-        bw = 26
-        nb = 3 if i == 1 else 2
+        bw = 24 if i == 1 else 26
+        nb = 4 if i == 1 else 2
         for g, (rate, vals) in enumerate(zip(rates, data)):
             gx = ax + g * gw + (gw - nb * bw - (nb - 1) * 6) / 2
             for k, ((name, col), v) in enumerate(zip(inst, vals)):
@@ -603,18 +605,23 @@ def c3_consumo_modos():
                 y = Y(v)
                 p.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw}' height='{ay + ah - y:.1f}' rx='2' fill='white' stroke='{BLUE}' stroke-width='1.5' stroke-dasharray='3 2'/>")
                 p.append(f"<text x='{x + bw/2:.1f}' y='{y - 5:.1f}' text-anchor='middle' fill='{BLUE}' {font(10, bold=True)}>{v}</text>")
+                x = gx + 3 * (bw + 6)
+                y = Y(standby[g])
+                p.append(f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw}' height='{ay + ah - y:.1f}' rx='2' fill='url(#hatch)' stroke='{SLATE}' stroke-width='1' stroke-dasharray='2 2'/>")
+                p.append(f"<text x='{x + bw/2:.1f}' y='{y - 5:.1f}' text-anchor='middle' fill='{SLATE}' {font(10, bold=True)}>?</text>")
             p.append(f"<text x='{ax + g * gw + gw/2:.1f}' y='{ay+ah+15}' text-anchor='middle' fill='{INK}' {font(10.5)}>{esc(rate)}</text>")
         p.append(f"<text x='{ax + pw/2:.1f}' y='{ay+ah+30}' text-anchor='middle' fill='{SLATE}' {font(10)}>amostras por segundo</text>")
     p.append(f"<text x='20' y='{ay-10}' fill='{SLATE}' {font(10)}>{esc('µA, log')}</text>")
     p.append(legend_svg(x0, ay + ah + 54, [(BLUE, "SPIM22 (PERI, P1, 8 MHz)"), (OFF, "SPIM00 (MCU, P2, 32 MHz)"),
-                                            (BLUE_TINT, "tracejada: SPIM22, N = 1 com RRAM em standby ou FLPR (8 µs/amostra)")]))
+                                            (BLUE_TINT, "tracejada azul: SPIM22, N = 1, M33 com RRAM em standby (8 µs/amostra)"),
+                                            (LINE, "hachurada com ?: SPIM22, N = 1 no FLPR, não medido (altura só ilustrativa)")]))
     bx, by, bw2 = x0, ay + ah + 66, W - 24 - x0
     p.append(f"<rect x='{bx}' y='{by}' width='{bw2}' height='{78}' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
     p.append(f"<text x='{bx+12}' y='{by+18}' fill='{INK}' {font(11, bold=True)}>Leitura</text>")
-    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('N = 1 contra N = 64 é a alavanca acima de ~5 k/s: a 16 k/s, 1,07 mA contra 0,35 mA. Metade do custo de N = 1 é a RRAM acordando a cada amostra (13 dos 21 µs).')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('RRAM em standby ou FLPR corta N = 1 para 0,53 mA a 16 k/s. SPIM00 custa ~+300 µA em qualquer taxa: só paga pela margem de barramento, nunca por consumo.')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+67}' fill='{SLATE}' {font(10.5)}>{esc('O contador TIMER (121 µA) faz parte do desenho e não é alavanca nestas taxas. N = 1 não é monotônico: entre 25 e 40 k/s o core deixa de dormir e os 13 µs somem.')}</text>")
-    p.append(f"<text x='{x0}' y='{h-24}' fill='{SLATE}' {font(9.5)}>{esc('Premissas: base 2,9 µA; PERI ligado 20 µA (R, Academy); domínio MCU 300 µA (E, proxy TIMER00) só na SPIM00; SPIM ativa 0,25 mA (8 MHz) / 0,8 mA (32 MHz); t = 12,5 µs (8 MHz) ou 4,25 µs (32 MHz);')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('N = 1 custa 1,4× (1,6 k/s), 3,0× (16 k/s) e 1,7× (50 k/s) o N = 64; a RRAM acordando responde por 23 %, 51 % e 0 % desse custo (a 50 k/s o core já não dorme).')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('Para consumo, N = 1 pede RRAM em standby (0,53 mA a 16 k/s; custo de idle não publicado). FLPR: sem número; evita o wake-up da RRAM (vpr_offloading da Nordic: 146 → 125 µA, R), mas o idle do VPR pode ser +0,5 mA (DevZone, R).')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+67}' fill='{SLATE}' {font(10.5)}>{esc('SPIM00 custa ~+300 µA em qualquer taxa: só paga por barramento. O contador TIMER (121 µA) faz parte do desenho. N = 1 não é monotônico entre 25 e 40 k/s (o core deixa de dormir).')}</text>")
+    p.append(f"<text x='{x0}' y='{h-24}' fill='{SLATE}' {font(9.5)}>{esc('Premissas: base 2,9 µA; PERI ligado 20 µA (R, Academy); domínio MCU 300 µA (E, proxy TIMER00) só na SPIM00; SPIM ativa 0,25 mA (SPIM2x) / 0,8 mA (SPIM00); t = 12,5 µs (8 MHz) ou 4,25 µs (32 MHz);')}</text>")
     p.append(f"<text x='{x0}' y='{h-10}' fill='{SLATE}' {font(9.5)}>{esc('contador TIMER21 121 µA; CPU 2,6 mA × 3,8 µs (N = 64) ou 21 µs (N = 1: 8 de trabalho + 13 de wake-up da RRAM; 8 µs acima de ~40 k/s ou com RRAM standby) por amostra.')}</text>")
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
     with open(os.path.join(OUT, "consumo_modos_nrf54l15.svg"), "w", encoding="utf-8") as fh:

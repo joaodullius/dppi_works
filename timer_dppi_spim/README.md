@@ -59,7 +59,7 @@ Ferramentas:
 | `APP_SAMPLE_PERIOD_US` | 1000 | período do TIMER (10 µs a 1 s) |
 | `APP_SWEEP_PERIODS_US` | "" | lista de períodos para varrer (bancada); imprime `=== sweep result` por período |
 | `APP_SWEEP_STEP_S` | 10 | segundos por passo da varredura |
-| `APP_BLOCK_SAMPLES` | 64 | N, transações por interrupção (1 para latência de uma amostra) |
+| `APP_BLOCK_SAMPLES` | 64 | N, transações por interrupção (amostras, sem filtro; 1 para latência de uma amostra) |
 | `APP_QUEUE_DEPTH` | 256 | profundidade da `k_msgq` em amostras |
 | `APP_QUEUE_FRESH_ONLY` | n | filtro na ISR: só amostras com data-ready entram na fila; `skipped` conta as repetidas |
 | `APP_SPI_FREQ_HZ` | 4 MHz | clock da SPIM (8 MHz na TAG) |
@@ -131,22 +131,24 @@ Relatório por segundo (TAG, timer de 10 kHz, N = 16, sem filtro):
 ODR real do sensor. Com `APP_QUEUE_FRESH_ONLY=y` a fila recebe só as
 amostras novas e as repetidas aparecem em `skipped`.
 
-Varredura (TAG, `bench/sweep-tag.conf`):
+Varredura (TAG, `bench/sweep-tag.conf`, `test-logs/u_tag_sweep.log`; o
+banner atual é `timer_dppi_spim: BMI270, trigger=timer 2500 us, queue N=16
+fresh-only`):
 
 ```
-<inf> app: timer_dppi_spim: BMI270, trigger=timer 2500 us, consume=queue N=16 fresh-only
 <inf> app: === sweep: period 2500 us (400.0 Hz) for 10 s
-<inf> app: === sweep result: period 2500 us: xfers/s=400 queued/s=400 fresh/s=400.0 skipped=0 dropped=0 late_wraps=0
+<inf> app: === sweep result: period 2500 us: xfers/s=400 queued/s=400 fresh/s=400.0 skipped=0 dropped=0
 <inf> app: === sweep: period 2475 us (404.0 Hz) for 10 s
-<inf> app: === sweep result: period 2475 us: xfers/s=404 queued/s=401 fresh/s=401.4 skipped=19 dropped=0 late_wraps=0
+<inf> app: === sweep result: period 2475 us: xfers/s=404 queued/s=401 fresh/s=401.5 skipped=18 dropped=0
 ```
 
 Cada passo descarta o primeiro segundo e imprime os totais dos seguintes.
-`xfers` conta inícios de transação (no relatório por segundo aparece como
-`late` o mesmo contador `late_wraps`). `late_wraps` diferente de zero indica
-que o wrap do anel rodou depois do `START` seguinte: a transação que já
-tinha começado foi para a folga do anel e não entra na fila (uma amostra
-perdida, ordem preservada, não se acumula), sem corromper memória.
+Campos: `xfers` conta inícios de transação; `late` no relatório por
+segundo e `late_wraps` no resultado da varredura são o mesmo contador.
+`late_wraps` diferente de zero indica que o wrap do anel rodou depois do
+`START` seguinte: a transação que já tinha começado foi para a folga do
+anel e não entra na fila (uma amostra perdida, ordem preservada, não se
+acumula), sem corromper memória.
 
 ## Resultados
 
@@ -154,16 +156,13 @@ Medidos (M) em 2026-09-27 com log por RTT; os logs estão em `test-logs/`.
 SCK: 8 MHz na TAG; na Thingy:53, 4 MHz nos testes a 1 e 10 kHz (default do
 Kconfig) e 8 MHz no bench de 64 k (`bench/bus-64k-thingy.conf`).
 
-### Timer de 1 kHz e 10 kHz, sensor a 400 Hz
+### Timer de 10 kHz, sensor a 400 Hz
 
-| Alvo | TIMER 1 kHz, transações/s | TIMER 10 kHz, N = 16 |
-|---|---|---|
-| Thingy:53 M33 (ADXL362) | 1000/s exato | 10000/s, fresh ≈ 380 |
-| TAG M33 (BMI270) | 1000/s exato | 10000/s, fresh 402 |
-| TAG FLPR (BMI270) | — | 10016/s do HFINT; **10001/s** com `hfxo_launcher` |
-
-A coluna de 1 kHz é só a contagem de transações (mesma aquisição, medida
-com uma versão anterior do exemplo que não tinha fila).
+| Alvo | TIMER 10 kHz, N = 16 (transações/s; `fresh` = amostras novas/s) |
+|---|---|
+| Thingy:53 M33 (ADXL362) | 10000/s, fresh ≈ 380 |
+| TAG M33 (BMI270) | 10000/s, fresh 402 |
+| TAG FLPR (BMI270) | 10016/s do HFINT; **10001/s** com `hfxo_launcher` |
 
 ### Timer × ODR: taxa mínima sem perda
 
@@ -174,15 +173,14 @@ coluna "amostras novas/s" é o `fresh/s`, que com o filtro é igual ao
 | Período do timer | Transações/s | Amostras novas/s | Perde amostras? |
 |---|---|---|---|
 | 2500 µs (400/s) | 400 | 400,0 | **sim, cerca de 2/s, sem rastro** |
-| 2475 µs (404/s) | 404 | 401,5 | limiar |
+| 2475 µs (404/s) | 404 | 401,5 | não (18 repetidas em 10 s) |
 | 2450 µs (408/s) | 408 | 402,6 | não (55 repetidas em 10 s) |
 | 2400 µs (416/s) | 416 | 401,4 | não |
 | 2200 µs (454/s) | 454 | 402,4 | não |
 
 Abaixo do ODR real o timer perde amostras em silêncio: o data-ready volta a
-subir antes da próxima leitura. Os 401,4 e 401,5 das linhas de 2475 e
-2400 µs não são perda: a taxa real do sensor oscila ±1/s entre janelas de
-1 s. O critério de perda é outro: `skipped = 0` com amostras novas/s
+subir antes da próxima leitura. Os 401,5 (2475 µs) e 401,4 (2400 µs) não
+são perda: a taxa real do sensor oscila ±1/s entre janelas de 1 s. O critério de perda é outro: `skipped = 0` com amostras novas/s
 abaixo do ODR real significa que o timer nunca leu uma repetida, logo
 perdeu amostras; a partir de 2450 µs aparecem repetidas (`skipped > 0`),
 prova de que o timer está à frente do sensor. O medido é 1,5 % acima do ODR real (2 % do
@@ -193,7 +191,10 @@ nominal, para cobrir a tolerância do oscilador do sensor.
 
 N = 64, fila 512, filtro na ISR. As transações/s são a contagem
 de inícios; acima do teto ela pode continuar subindo com dados congelados,
-então a validade é julgada pelo conteúdo (Z variando).
+então a validade é julgada pelo conteúdo (Z variando). Estes são tetos de
+barramento, não contagens de amostras novas: a 19 µs de espaçamento o
+filtro `fresh` já não é confiável (Achado 4), então `fresh` aqui não mede o
+ODR. 1/t prevê 54 k/s (17 B) e 80 k/s (11 B); o medido é até 10 % menor.
 
 TAG M33, BMI270, 17 bytes a 8 MHz (`bench/bus-max-tag.conf`):
 
@@ -215,10 +216,10 @@ Thingy:53 M33, ADXL362, 11 bytes a 8 MHz (`bench/bus-64k-thingy.conf`):
 O teto real é o barramento: 11 bytes + `START` + CSN ≈ 12,5 µs, e 14 µs é o
 último período com dados válidos (71,4 k/s). O wrap do anel não limita: a
 ISR escreve o `RXD.PTR` logo após o início da última transação do ciclo e
-tem um período de prazo, até o próximo `START` (ver Achados). Nesses benches
-com N = 64 o core dorme entre blocos; o wrap passou porque 19 µs e 14 µs são
-maiores que a latência de wake-up de cada SoC (17 µs no M33 do nRF54L15,
-nenhuma RRAM no nRF5340).
+tem um período de prazo, até o próximo `START` (ver Achados). Nestas
+bancadas com N = 64 o core dorme entre blocos; o wrap passou porque 19 µs e
+14 µs são maiores que a latência de wake-up de cada SoC (17 µs no M33 do
+nRF54L15, nenhuma RRAM no nRF5340).
 
 TAG FLPR com `hfxo_launcher` (`bench/bus-max-tag.conf`): 25058 / 40097 /
 50117 / 52759 transações por segundo de 40 a 19 µs, `late_wraps` 0, sem
@@ -234,11 +235,11 @@ e um `k_msgq_get`. Latência = do `COMPARE` do trigger até a ISR de wrap
 
 | Configuração | Latência, core em idle (média / máx.) | Latência, core acordado | N = 1 sem `late_wraps` até |
 |---|---|---|---|
-| M33 padrão | 16,8 / 17,3 µs | 1,7–2,6 µs (o core deixa de dormir acima de ~40 k/s neste bench) | 50 k/s |
-| M33 contando `STARTED` | 17,3 / 17,8 µs | 2,3–2,7 µs | 50 k/s |
-| M33 + constant latency | 16,8 / 17,1 µs (não resolve) | 1,7 µs | 50 k/s |
-| M33 + RRAM standby | **2,75 / 2,93 µs** | 1,7–2,3 µs | 50 k/s |
-| FLPR | **2,43 / 2,50 µs** | 2,43 µs, constante | 40 k/s; a 50 k/s 50086 `late_wraps` em 5 s (core saturado; `dropped` 0) |
+| M33 padrão | 16,8 / 17,3 µs | 1,7–2,6 µs (o core deixa de dormir entre 25 e 40 k/s; acima de ~40 k/s a latência é a de core acordado) | 50 k/s (máximo varrido) |
+| M33 contando `STARTED` | 17,3 / 17,8 µs | 2,3–2,7 µs | 50 k/s (máximo varrido) |
+| M33 + constant latency | 16,8 / 17,1 µs (não resolve) | 1,7 µs | 50 k/s (máximo varrido) |
+| M33 + RRAM standby | **2,75 / 2,93 µs** | 1,7–2,3 µs | 50 k/s (máximo varrido) |
+| FLPR | **2,43 / 2,50 µs** | 2,43 µs, constante | 40 k/s; a 50 k/s 50086 `late_wraps` em 5 s, ≈ 40 % dos 125 k wraps (core saturado; `dropped` 0) |
 
 Logs: `test-logs/u_tag_n1_m33.log`, `u_tag_n1_m33_started.log`,
 `u_tag_n1_m33_constlat.log`, `u_tag_n1_m33_rramstandby.log`,
@@ -262,7 +263,7 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
 
 ## Achados
 
-1. **HFXO**: sem o pedido, o TIMER roda do HFINT, cerca de 0,2 % fora. O
+1. **HFXO**: sem o pedido, o TIMER roda do HFINT, cerca de 0,2 % fora (M). O
    FLPR não tem clock control no NCS 3.4.1, por isso o `hfxo_launcher`.
 2. **Latência de 17 µs do M33 em idle = wake-up da RRAM.** Com o core em
    idle a RRAM entra em power-down (padrão do `RRAMC`) e a primeira
@@ -294,7 +295,9 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
    "fresh"/s para ≈ 380 reais). O filtro é uma heurística; a taxa real é o
    ODR. Com `APP_QUEUE_FRESH_ONLY` a 10 kHz (100 µs) o filtro ainda acerta
    (fresh 402 na TAG); abaixo disso a fila recebe repetidas marcadas como
-   novas.
+   novas. Consequência: acima de ~10 k transações/s o caso 2 não garante
+   "só amostras novas", e um sensor sem data-ready acima disso não tem
+   estratégia limpa aqui (aceitar repetidas ou usar a FIFO do sensor).
 5. **Log deferred trava na varredura**: a bancada usa `LOG_MODE_IMMEDIATE`,
    `LOG_BACKEND_RTT_MODE_DROP` e pilha do log em 2048 bytes.
 6. **Sysbuild**: `-D<imagem>_CONFIG_X=y` só para símbolos Kconfig; um Kconfig

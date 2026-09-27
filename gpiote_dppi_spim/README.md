@@ -21,9 +21,11 @@ Um TIMER em modo contador conta os inícios de transação (`STARTED` no
 nRF5340, `DMA.RX.READY` no nRF54L); seus `COMPARE` geram a interrupção a
 cada N amostras. O EasyDMA em *array list* preenche um anel de 3N slots; a
 cada N amostras a ISR de bloco empurra o bloco para uma `k_msgq`, e o
-consumidor as retira uma a uma, em ordem. N é a única escolha de produto:
-N = 1 para latência de uma amostra, N = 64 (default) para menor CPU e
-consumo.
+consumidor as retira uma a uma, em ordem. N é a escolha de produto
+principal: N = 1 para latência de uma amostra, N = 64 (default) para menor
+CPU e consumo; a instância da SPIM e o core entram só por barramento e
+latência (ver o README da raiz). Interrupções por segundo = 1,5 × taxa / N
+(uma ISR de bloco a cada N e uma de wrap a cada 2N).
 
 Este é o exemplo recomendado: não usa TIMER de disparo nem HFXO, não lê
 amostras repetidas, e a taxa de transações é exatamente o ODR do sensor. O
@@ -106,11 +108,22 @@ HFXO.
 
 Depois de gravar, o log mostra a inicialização do sensor, o disparo e a
 conexão DPPI, e em seguida um relatório por segundo (TAG, BMI270 a
-1600 Hz, N = 16):
+1600 Hz, N = 64, `test-logs/u_tag_int_n64_1600.log`):
 
 ```
-<inf> app: t=25000 ms xfers=40240 queued=1615 fresh=1615 dropped=0 late=0 Z avg=-0.18 min=-0.30 max=-0.07 m/s^2
-<inf> app: t=26000 ms xfers=41848 queued=1601 fresh=1601 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.06 m/s^2
+<inf> app: gpiote_dppi_spim: BMI270, trigger=data-ready pin, queue N=64
+<inf> spim_dppi: DPPI connected, queue (wrap ISR + EGU) consumption, burst 17 bytes, counting DMA.RX.READY, wrap ISR zero-latency
+<inf> app: t=10000 ms xfers=16090 queued=1600 fresh=1600 dropped=0 late=0 Z avg=-0.51 min=-0.63 max=-0.38 m/s^2
+<inf> app: t=11000 ms xfers=17698 queued=1600 fresh=1600 dropped=0 late=0 Z avg=-0.51 min=-0.62 max=-0.39 m/s^2
+```
+
+Com N = 1 (`u_tag_int_n1_1600.log`) a mesma aquisição entrega uma amostra
+por interrupção:
+
+```
+<inf> app: gpiote_dppi_spim: BMI270, trigger=data-ready pin, queue N=1
+<inf> app: t=10000 ms xfers=16077 queued=1607 fresh=1607 dropped=0 late=0 Z avg=-0.51 min=-0.61 max=-0.38 m/s^2
+<inf> app: t=11000 ms xfers=17685 queued=1608 fresh=1608 dropped=0 late=0 Z avg=-0.51 min=-0.61 max=-0.39 m/s^2
 ```
 
 `xfers` é o contador de inícios de transação em hardware e avança no ODR do
@@ -123,7 +136,10 @@ amostras que não couberam na fila. `late` é o contador `late_wraps`: wraps
 do anel feitos depois de o `START` seguinte já ter ocorrido; a transação
 que já tinha começado foi para a folga do anel e não entra na fila (uma
 amostra perdida, ordem preservada, não se acumula de um ciclo para o
-outro). Não corrompe memória, e o contador é a forma de detectar.
+outro). Não corrompe memória, e o contador é a forma de detectar. Se uma
+borda de data-ready se perder, a aquisição para com o pino alto (o
+data-ready é nível); um watchdog que dispare `START` por software quando
+`xfers` não avança não está implementado.
 
 ## Resultados
 
@@ -131,17 +147,21 @@ Medidos (M) em 2026-09-27 com log por RTT; os logs estão em `test-logs/`.
 Todos com `dropped = 0` e `late = 0`. SCK: 4 MHz na Thingy:53 (default do
 Kconfig), 8 MHz na TAG (`boards/*.conf`).
 
-| Alvo | ODR | Transações/s (N = 16) |
-|---|---|---|
-| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 380/s, 368–384 entre janelas) | ≈ 380/s, queued = fresh |
-| TAG M33 (BMI270) | 400 Hz | 400/s, queued = fresh |
-| TAG M33 (BMI270) | **1600 Hz (máximo do sensor)** | **1601–1616/s, queued = fresh, 0 perdas** |
-| TAG FLPR (BMI270) | 400 Hz | 400/s, queued = fresh |
-| TAG FLPR (BMI270) | **1600 Hz** | **1601–1616/s, 0 perdas** |
+| Alvo | ODR | N | Transações/s (= amostras/s) | Log |
+|---|---|---|---|---|
+| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 380/s) | 64 | ≈ 380/s (320–384 entre janelas de 1 s: alinhamento dos blocos), queued = fresh | `u_thingy_int_n64.log` |
+| Thingy:53 M33 (ADXL362) | 400 Hz | 16 | ≈ 380/s (368–384), queued = fresh | `u_thingy_int_queue.log` |
+| TAG M33 (BMI270) | 400 Hz | 16 | 400/s, queued = fresh | `u_tag_int_queue.log` |
+| TAG M33 (BMI270) | **1600 Hz (máximo do sensor)** | 64 | **1600–1664/s, queued = fresh, 0 perdas** | `u_tag_int_n64_1600.log` |
+| TAG M33 (BMI270) | 1600 Hz | 1 | 1607–1609/s, queued = fresh, 0 perdas | `u_tag_int_n1_1600.log` |
+| TAG M33 (BMI270) | 1600 Hz | 16 | 1601–1616/s, queued = fresh, 0 perdas | `u_tag_int_queue_1600.log` |
+| TAG FLPR (BMI270) | 400 Hz | 16 | 400/s, queued = fresh | `u_tag_flpr_int_queue.log` |
+| TAG FLPR (BMI270) | **1600 Hz** | 64 | **1600/s, 0 perdas** | `u_tag_flpr_int_n64_1600.log` |
+| TAG FLPR (BMI270) | 1600 Hz | 16 | 1601–1616/s, 0 perdas | `u_tag_flpr_int_queue_1600.log` |
 
-N = 1 e N = 64 usam o mesmo caminho; o custo de CPU de cada N está medido
-no bench N = 1 do [`timer_dppi_spim`](../timer_dppi_spim/README.md) e
-modelado em [`docs/POWER.md`](../docs/POWER.md).
+O custo de CPU de cada N está medido na bancada N = 1 do
+[`timer_dppi_spim`](../timer_dppi_spim/README.md) e modelado em
+[`docs/POWER.md`](../docs/POWER.md).
 
 Acima do ODR dos sensores disponíveis o limite deste caminho é o barramento,
 não o disparo. Os tetos foram medidos com o exemplo de TIMER, porque nenhum
