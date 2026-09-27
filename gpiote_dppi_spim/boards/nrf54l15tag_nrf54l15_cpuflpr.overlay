@@ -7,8 +7,6 @@
 / {
 	chosen {
 		app,accel = &bmi270;
-		app,timer-count = &timer21;
-		app,egu = &egu20;
 	};
 };
 

@@ -3,10 +3,12 @@
  * nRF Connect SDK v3.4.1
  *
  *   TIMER COMPARE0 --DPPI--> SPIM START
- *   SPIM (hardware CSN, EasyDMA) --END--DPPI--> TIMER counter
+ *   SPIM (hardware CSN, EasyDMA, RX pointer post-increment) fills a ring;
+ *   a drain thread moves the new slots to a k_msgq every APP_DRAIN_PERIOD_US.
  *
- * The board overlay selects sensor, bus, pins and timers (see app_dt.h);
- * Kconfig selects period and consumption mode. This file only reports and,
+ * The board overlay selects sensor, bus, pins and the trigger TIMER (see
+ * app_dt.h); Kconfig selects period, drain period and ring size. This file
+ * only reports and,
  * when APP_SWEEP_PERIODS_US is set, sweeps the period (bench).
  */
 #include <stdlib.h>
@@ -64,9 +66,9 @@ static void run_window(uint32_t *elapsed_ms)
 		win.zsum += s.z;
 	}
 	*elapsed_ms += CONFIG_APP_REPORT_PERIOD_MS;
-	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u skipped=%u dropped=%u late=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
+	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u skipped=%u dropped=%u late=%u ovf=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
 		*elapsed_ms, spim_dppi_total_xfers(), win.n, win.fresh, spim_dppi_skipped(),
-		spim_dppi_dropped(), spim_dppi_late_wraps(),
+		spim_dppi_dropped(), spim_dppi_late_wraps(), spim_dppi_overflows(),
 		win.n ? (double)to_ms2(win.zsum / (int32_t)win.n) : 0.0,
 		win.n ? (double)to_ms2(win.zmin) : 0.0, win.n ? (double)to_ms2(win.zmax) : 0.0);
 	stats_reset(&win);
@@ -116,10 +118,10 @@ static void run_sweep(const char *list)
 		}
 		uint32_t secs = CONFIG_APP_SWEEP_STEP_S - 1;
 
-		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u",
+		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u overflows=%u",
 			period, (spim_dppi_total_xfers() - x0) / secs, q / secs, f / secs,
 			(f * 10 / secs) % 10, spim_dppi_skipped() - s0, spim_dppi_dropped() - d0,
-			spim_dppi_late_wraps() - l0);
+			spim_dppi_late_wraps() - l0, spim_dppi_overflows());
 #if defined(CONFIG_APP_WRAP_LATENCY_STATS)
 		uint32_t mn, av, mx;
 
@@ -138,9 +140,9 @@ int main(void)
 	int err;
 	uint32_t elapsed_ms = 0;
 
-	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, queue N=%s%s", sensor->name,
+	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, drain every %u us%s", sensor->name,
 		CONFIG_APP_SAMPLE_PERIOD_US,
-		STRINGIFY(CONFIG_APP_BLOCK_SAMPLES),
+		CONFIG_APP_DRAIN_PERIOD_US,
 		IS_ENABLED(CONFIG_APP_QUEUE_FRESH_ONLY) ? " fresh-only" : "");
 
 	err = spim_dppi_init();

@@ -26,19 +26,30 @@ config APP_SENSOR_ODR_HZ
 	  (ADXL362: 12.5..400 Hz, BMI270: 25..1600 Hz). The data-ready pin
 	  fires once per sample, so this is also the SPI transaction rate.
 
-config APP_BLOCK_SAMPLES
-	int "Samples per block (interrupt every N samples)"
-	default 64
-	range 1 512
+config APP_DRAIN_PERIOD_US
+	int "Drain period in microseconds"
+	default 10000
+	range 100 1000000
 	help
-	  N = 1 gives one interrupt per sample (lowest latency, highest CPU
-	  cost); larger N amortizes the interrupt over a block.
+	  A thread wakes up every period, reads the EasyDMA pointer, pushes the
+	  slots that arrived into the message queue and arms the ring wrap.
+	  Delivery latency = one period; interrupts per second = 1 / period
+	  (wake-up) + 1 / period (wrap), independent of the sample rate.
+
+config APP_RING_SLOTS
+	int "Ring size in samples"
+	default 256
+	range 8 4096
+	help
+	  Must hold the samples of more than one drain period with slack for
+	  timer jitter and scheduling delay; 8 guard slots are added after it.
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"
 	default 256
 	help
-	  Must hold at least two blocks plus the worst-case consumer delay.
+	  Must hold at least one drain's worth of samples plus the worst-case
+	  consumer delay.
 
 config APP_SPI_FREQ_HZ
 	int "SPIM clock frequency in Hz"

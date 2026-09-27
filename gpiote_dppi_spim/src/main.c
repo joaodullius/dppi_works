@@ -3,10 +3,11 @@
  * nRF Connect SDK v3.4.1
  *
  *   sensor INT pin --GPIOTE IN event--DPPI--> SPIM START
- *   SPIM (hardware CSN, EasyDMA) --END--DPPI--> TIMER counter
+ *   SPIM (hardware CSN, EasyDMA, RX pointer post-increment) fills a ring;
+ *   a drain thread moves the new slots to a k_msgq every APP_DRAIN_PERIOD_US.
  *
- * The board overlay selects sensor, bus, pins and timers (see app_dt.h);
- * Kconfig selects the consumption mode. This file only reports.
+ * The board overlay selects sensor, bus and pins (see app_dt.h); Kconfig
+ * selects the drain period and the ring size. This file only reports.
  */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -60,9 +61,9 @@ static void run_window(uint32_t *elapsed_ms)
 		win.zsum += s.z;
 	}
 	*elapsed_ms += CONFIG_APP_REPORT_PERIOD_MS;
-	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u dropped=%u late=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
+	LOG_INF("t=%u ms xfers=%u queued=%u fresh=%u dropped=%u late=%u ovf=%u Z avg=%.2f min=%.2f max=%.2f m/s^2",
 		*elapsed_ms, spim_dppi_total_xfers(), win.n, win.fresh,
-		spim_dppi_dropped(), spim_dppi_late_wraps(),
+		spim_dppi_dropped(), spim_dppi_late_wraps(), spim_dppi_overflows(),
 		win.n ? (double)to_ms2(win.zsum / (int32_t)win.n) : 0.0,
 		win.n ? (double)to_ms2(win.zmin) : 0.0, win.n ? (double)to_ms2(win.zmax) : 0.0);
 	stats_reset(&win);
@@ -73,8 +74,8 @@ int main(void)
 	int err;
 	uint32_t elapsed_ms = 0;
 
-	LOG_INF("gpiote_dppi_spim: %s, trigger=data-ready pin, queue N=%s", sensor->name,
-		STRINGIFY(CONFIG_APP_BLOCK_SAMPLES));
+	LOG_INF("gpiote_dppi_spim: %s, trigger=data-ready pin, drain every %u us", sensor->name,
+		CONFIG_APP_DRAIN_PERIOD_US);
 
 	err = spim_dppi_init();
 	if (err) {

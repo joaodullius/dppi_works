@@ -15,7 +15,6 @@
 #if defined(CONFIG_APP_RRAM_STANDBY)
 #include <hal/nrf_rramc.h>
 #endif
-#include <nrfx_egu.h>
 #include <helpers/nrfx_gppi.h>
 #include <hal/nrf_spim.h>
 #include <hal/nrf_timer.h>
@@ -31,41 +30,76 @@ LOG_MODULE_REGISTER(spim_dppi, LOG_LEVEL_INF);
 static nrfx_spim_t spim = NRFX_SPIM_INSTANCE(DT_REG_ADDR(BUS_NODE));
 PINCTRL_DT_DEFINE(BUS_NODE);
 
-static nrfx_timer_t timer_cnt = NRFX_TIMER_INSTANCE(DT_REG_ADDR(CNT_TIMER_NODE));
-static nrfx_egu_t egu = NRFX_EGU_INSTANCE(DT_REG_ADDR(EGU_NODE));
 /* Trigger: free-running TIMER whose COMPARE0 starts every transaction */
 static nrfx_timer_t timer_trig = NRFX_TIMER_INSTANCE(DT_REG_ADDR(TRIG_TIMER_NODE));
 
-/* Event counted per transaction: the one after which .PTR may be rewritten */
+/* Event after which the .PTR register may be rewritten for the next transfer:
+ * DMA.RX.READY on nRF54L ("EasyDMA has buffered the .PTR and .MAXCNT
+ * registers"), STARTED on nRF53/52 ("can be updated immediately after having
+ * received the STARTED event"). nrfx names the former RXSTARTED. */
 #if NRF_SPIM_HAS_DMA_REG && !defined(CONFIG_APP_COUNT_STARTED)
-#define CNT_EVENT      NRF_SPIM_EVENT_RXSTARTED   /* DMA.RX.READY (nRF54L) */
-#define CNT_EVENT_NAME "DMA.RX.READY"
+#define READY_EVENT      NRF_SPIM_EVENT_RXSTARTED
+#define READY_INT_MASK   NRF_SPIM_INT_RXREADY_MASK
+#define READY_EVENT_NAME "DMA.RX.READY"
 #else
-#define CNT_EVENT      NRF_SPIM_EVENT_STARTED
-#define CNT_EVENT_NAME "STARTED"
+#define READY_EVENT      NRF_SPIM_EVENT_STARTED
+#define READY_INT_MASK   NRF_SPIM_INT_STARTED_MASK
+#define READY_EVENT_NAME "STARTED"
 #endif
 
+/* ---- Ring ---------------------------------------------------------------- */
 
-/* ---- Buffers ------------------------------------------------------------ */
+/*
+ * The EasyDMA array list writes one burst per transaction into consecutive
+ * slots of the ring, on its own. A drain thread wakes up every
+ * APP_DRAIN_PERIOD_US, reads the DMA pointer to know how many slots arrived,
+ * pushes them into the message queue and then arms the wrap: the next READY
+ * interrupt rewrites the pointer to slot 0, inside the window the datasheet
+ * allows (right after READY/STARTED, before the next START). No TIMER
+ * counter, no EGU, no zero-latency ISR.
+ *
+ * GUARD slots follow the ring so that a drain that runs late overflows into
+ * unused memory (counted as overflow) instead of whatever follows the array.
+ */
+#define RING_SLOTS  CONFIG_APP_RING_SLOTS
+#define GUARD_SLOTS 8
 
-/* Ping-pong of 2N slots plus N slots of slack: if the wrap ISR (COMPARE1)
- * runs later than one trigger period, the array list keeps writing past the
- * second block instead of corrupting whatever follows the buffer. */
-#define RING_SLOTS (3 * CONFIG_APP_BLOCK_SAMPLES)
 K_MSGQ_DEFINE(sample_q, SENSOR_BURST_LEN, CONFIG_APP_QUEUE_DEPTH, 1);
-static uint32_t dropped;
-static uint32_t skipped;
-static uint32_t late_wraps;
-static uint32_t cycles_done;   /* completed 2N-slot ring cycles */
+
+static uint8_t ring[RING_SLOTS + GUARD_SLOTS][SENSOR_BURST_LEN];
+/* EasyDMA source: the backend's TX prefix copied to RAM (EasyDMA cannot read flash) */
+static uint8_t burst_tx[SENSOR_BURST_LEN];
+
+static uint32_t dropped;      /* samples that did not fit in the queue */
+static uint32_t late_wraps;   /* wraps written after the next START (one sample to slack) */
+static uint32_t overflows;    /* drains that found the DMA past the ring end */
+static uint32_t lap_base;     /* transactions completed in previous laps (for xfers) */
+static uint32_t skipped;      /* repeated samples dropped by the fresh filter */
 #if defined(CONFIG_APP_WRAP_LATENCY_STATS)
 /* Trigger-timer ticks (16 MHz) from the trigger COMPARE to the wrap ISR */
 static uint32_t lat_min = UINT32_MAX, lat_max, lat_sum, lat_n;
 #endif
 
-/* EasyDMA target: RING_SLOTS consecutive bursts (array list increments PTR by MAXCNT) */
-static uint8_t ring[RING_SLOTS][SENSOR_BURST_LEN];
-/* EasyDMA source: the backend's TX prefix copied to RAM (EasyDMA cannot read flash) */
-static uint8_t burst_tx[SENSOR_BURST_LEN];
+/* Drain state, only touched by the drain thread and the wrap ISR */
+static uint32_t tail;              /* next slot to deliver */
+static volatile bool wrap_armed;   /* READY interrupt enabled, waiting to rewrite PTR */
+static volatile bool wrap_done;    /* ISR wrote PTR = ring[0] */
+static volatile uint32_t wrap_last;/* last slot of the lap that ended with that wrap */
+
+static inline uint32_t rx_ptr_get(void)
+{
+#if NRF_SPIM_HAS_DMA_REG
+	return spim.p_reg->DMA.RX.PTR;
+#else
+	return spim.p_reg->RXD.PTR;
+#endif
+}
+
+/* Index of the slot the DMA will write next (the one before may be in flight) */
+static inline uint32_t head_index(void)
+{
+	return (rx_ptr_get() - (uint32_t)ring[0]) / SENSOR_BURST_LEN;
+}
 
 /* ---- Blocking SPI for sensor configuration ----------------------------- */
 
@@ -80,18 +114,53 @@ static void spim_evt_handler(nrfx_spim_event_t const *p_event, void *p_context)
 	}
 }
 
-/* The SPIM IRQ belongs to the nrfx driver only during the blocking phase.
- * In the repeated phase no SPIM interrupt is needed (the END counter does the
- * work), so everything is disabled; this branch only exists for safety. */
+/*
+ * Wrap ISR: READY of transaction k just fired, the register already points
+ * at slot k+1. Point it at slot 0 instead: transaction k+1 writes slot 0. If
+ * another READY arrives before the write, the next transaction had already
+ * consumed slot k+1 (slack): counted as late, no corruption.
+ */
+static void wrap_isr(void)
+{
+	uint32_t h = head_index();          /* k + 1 */
+#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
+	/* The trigger timer was cleared by the COMPARE that started transaction k */
+	uint32_t lt = nrfx_timer_capture(&timer_trig, NRF_TIMER_CC_CHANNEL1);
+
+	lat_min = MIN(lat_min, lt);
+	lat_max = MAX(lat_max, lt);
+	lat_sum += lt;
+	lat_n++;
+#endif
+
+	nrf_spim_int_disable(spim.p_reg, READY_INT_MASK);
+	nrf_spim_event_clear(spim.p_reg, READY_EVENT);
+	nrf_spim_rx_buffer_set(spim.p_reg, ring[0], SENSOR_BURST_LEN);
+	if (nrf_spim_event_check(spim.p_reg, READY_EVENT)) {
+		late_wraps++;
+		nrf_spim_event_clear(spim.p_reg, READY_EVENT);
+	}
+	wrap_last = h - 1;
+	wrap_armed = false;
+	wrap_done = true;
+}
+
+/* The SPIM IRQ belongs to the nrfx driver during the blocking phase and to
+ * the wrap logic afterwards. */
 static void spim_irq_wrapper(const void *arg)
 {
 	if (blocking_phase) {
 		nrfx_spim_irq_handler((nrfx_spim_t *)arg);
-	} else {
-		nrf_spim_int_disable(spim.p_reg, 0xFFFFFFFF);
-		nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
-		nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
+		return;
 	}
+	if (wrap_armed && nrf_spim_event_check(spim.p_reg, READY_EVENT)) {
+		wrap_isr();
+		return;
+	}
+	/* Anything else (e.g. END left enabled by the driver): silence it */
+	nrf_spim_int_disable(spim.p_reg, 0xFFFFFFFF);
+	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
+	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
 }
 
 int spim_xfer_blocking(const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_len)
@@ -115,17 +184,6 @@ int spim_xfer_blocking(const uint8_t *tx, size_t tx_len, uint8_t *rx, size_t rx_
 
 /* ---- Init ---------------------------------------------------------------- */
 
-static void __unused timer_irq_wrapper(const void *arg)
-{
-	nrfx_timer_irq_handler((nrfx_timer_t *)arg);
-}
-
-static void __unused timer_noop_handler(nrf_timer_event_t event_type, void *p_context)
-{
-	ARG_UNUSED(event_type);
-	ARG_UNUSED(p_context);
-}
-
 #if defined(CONFIG_APP_REQUEST_HFXO)
 static int hfxo_request(void)
 {
@@ -146,6 +204,12 @@ static int hfxo_request(void)
 	return res < 0 ? res : 0;
 }
 #endif
+
+static void timer_noop_handler(nrf_timer_event_t event_type, void *p_context)
+{
+	ARG_UNUSED(event_type);
+	ARG_UNUSED(p_context);
+}
 
 int spim_dppi_init(void)
 {
@@ -210,65 +274,126 @@ int spim_dppi_init(void)
 	return 0;
 }
 
-/* ---- Counter of SPIM END events (and block interrupts in QUEUE mode) --- */
+/* ---- Drain: ring -> message queue, then arm the wrap -------------------- */
 
-/* Current EasyDMA RX pointer (array list mode advances it after each transfer) */
-static inline uint32_t spim_rx_ptr_get(void)
+static void deliver(uint32_t from, uint32_t to)
 {
-#if NRF_SPIM_HAS_DMA_REG
-	return spim.p_reg->DMA.RX.PTR;
-#else
-	return spim.p_reg->RXD.PTR;
+	for (uint32_t i = from; i < to; i++) {
+#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
+		/* TIMER faster than the ODR re-reads the previous sample: the
+		 * data-ready bit in the burst's STATUS byte tells them apart */
+		if ((ring[i][sensor->fresh_offset] & sensor->fresh_mask) == 0) {
+			skipped++;
+			continue;
+		}
 #endif
+		if (k_msgq_put(&sample_q, ring[i], K_NO_WAIT) != 0) {
+			dropped++;
+		}
+	}
 }
 
 /*
- * The counter counts the event that marks the pointer registers as free
- * (not END): slot k of a ring cycle is in flight when the count is k+1. The
- * array-list pointer register is double-buffered and the hardware rewrites
- * it (PTR += MAXCNT) at every START, so the only safe moment for the CPU to
- * write it is right after that, with the whole transaction (>= 11 us here)
- * as margin. A write made around END, as an END-counted design does, can
- * coincide with the next START and the hardware update: the pointer is then
- * torn and the DMA writes elsewhere (bus/MPU fault at 15 us on the nRF5340).
- *
- * nRF54L: DMA.RX.READY ("EasyDMA has buffered the .PTR and .MAXCNT
- * registers, allowing them to be written to prepare for the next sequence")
- * is the literal definition of that window; nrfx names it RXSTARTED.
- * nRF53/52: no such event, STARTED ("can be updated immediately after
- * having received the STARTED event") is the reference.
- *
- *   COMPARE1 = 2N   START of slot 2N-1  -> wrap: PTR = ring[0] (this ISR,
- *                                          zero-latency), short CLEAR
- *   COMPARE0 = N+1  START of slot N     -> block A complete -> EGU T0
- *   COMPARE2 = 1    START of slot 0     -> block B complete -> EGU T1
- *                                          (skipped on the very first cycle)
+ * Called every APP_DRAIN_PERIOD_US from the drain thread. Slot h-1 may be in
+ * flight, so only slots below h-1 are delivered; the remainder goes out on
+ * the next drain. After a wrap, the lap that ended at wrap_last is finished
+ * first, then the new lap from slot 0.
  */
-static void cnt_handler(nrf_timer_event_t event_type, void *p_context)
+/* Samples per drain above which the wrap is awaited awake (see below) */
+#define SPIN_WRAP_MIN_ARRIVED 32
+
+static void drain(void)
 {
-	ARG_UNUSED(p_context);
+	uint32_t h = head_index();
+	uint32_t arrived = 0;
 
-	if (event_type == NRF_TIMER_EVENT_COMPARE1) {
-#if defined(CONFIG_APP_WRAP_LATENCY_STATS)
-		/* The trigger timer was cleared by the COMPARE that started this
-		 * transaction: its count is the latency up to here */
-		uint32_t t = nrfx_timer_capture(&timer_trig, NRF_TIMER_CC_CHANNEL1);
-
-		lat_min = MIN(lat_min, t);
-		lat_max = MAX(lat_max, t);
-		lat_sum += t;
-		lat_n++;
-#endif
-		/* Slot 2N-1 just started and the register already points at slot
-		 * 2N (slack). If it points further, the next START happened before
-		 * this ISR ran (one full transaction late): those samples went to
-		 * the slack area, not over memory. */
-		if (spim_rx_ptr_get() != (uint32_t)ring[2 * CONFIG_APP_BLOCK_SAMPLES]) {
-			late_wraps++;
-		}
-		nrf_spim_rx_buffer_set(spim.p_reg, ring[0], SENSOR_BURST_LEN);
-		cycles_done++;
+	if (h > RING_SLOTS) {
+		/* The drain came too late: the DMA is in the guard slots */
+		overflows++;
 	}
+	if (wrap_done) {
+		uint32_t last = wrap_last;
+
+		/* Everything up to and including wrap_last is complete once the new
+		 * lap has started (h >= 1); otherwise wrap_last may still be in flight */
+		if (h >= 1) {
+			deliver(tail, last + 1);
+			lap_base += last + 1;
+			tail = 0;
+			wrap_done = false;
+		} else {
+			deliver(tail, last);
+			tail = last;
+			return;
+		}
+	}
+	if (h >= 1 && h - 1 > tail) {
+		arrived = h - 1 - tail;
+		deliver(tail, h - 1);
+		tail = h - 1;
+	}
+	/* Arm the wrap at the next READY (only if something is going to arrive
+	 * beyond slot 0, i.e. the DMA left slot 0) */
+	if (!wrap_armed && !wrap_done && h >= 1) {
+		wrap_armed = true;
+		nrf_spim_event_clear(spim.p_reg, READY_EVENT);
+		nrf_spim_int_enable(spim.p_reg, READY_INT_MASK);
+		/* At high rates the next READY is microseconds away and the wrap
+		 * must land before the START after it. Waking the core from idle
+		 * for that IRQ costs ~17 us on the nRF54L15 (RRAM) and a few us on
+		 * the nRF5340, more than one period: stay awake for it instead.
+		 * At low rates the IRQ path is used and the core sleeps. */
+		if (arrived >= SPIN_WRAP_MIN_ARRIVED) {
+			uint32_t t0 = k_cycle_get_32();
+			uint32_t limit = k_us_to_cyc_ceil32(CONFIG_APP_DRAIN_PERIOD_US / 4);
+
+			while (!wrap_done && (k_cycle_get_32() - t0) < limit) {
+			}
+		}
+	}
+}
+
+static void drain_thread(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a); ARG_UNUSED(b); ARG_UNUSED(c);
+	while (1) {
+		k_sleep(K_USEC(CONFIG_APP_DRAIN_PERIOD_US));
+		if (!blocking_phase) {
+			drain();
+		}
+	}
+}
+
+K_THREAD_DEFINE(drain_tid, 1024, drain_thread, NULL, NULL, NULL, -1, 0, 0);
+
+uint32_t spim_dppi_total_xfers(void)
+{
+	/* Transactions started: previous laps plus the current head. Between the
+	 * wrap ISR and its drain the head already restarted from 0, so add the
+	 * finished lap that has not been folded into lap_base yet. */
+	uint32_t h = head_index();
+
+	return lap_base + h + (wrap_done ? wrap_last + 1 : 0);
+}
+
+uint32_t spim_dppi_dropped(void)
+{
+	return dropped;
+}
+
+uint32_t spim_dppi_late_wraps(void)
+{
+	return late_wraps;
+}
+
+uint32_t spim_dppi_overflows(void)
+{
+	return overflows;
+}
+
+uint32_t spim_dppi_skipped(void)
+{
+	return skipped;
 }
 
 #if defined(CONFIG_APP_WRAP_LATENCY_STATS)
@@ -293,112 +418,6 @@ bool spim_dppi_wrap_latency(uint32_t *min_ns, uint32_t *avg_ns, uint32_t *max_ns
 }
 #endif
 
-/*
- * EGU ISR (normal priority): COMPARE0/COMPARE2 reach the EGU through DPPI, so
- * the queue work runs here without holding up the wrap above.
- */
-static void egu_handler(uint8_t event_idx, void *p_context)
-{
-	ARG_UNUSED(p_context);
-	static bool first_cycle = true;
-	const uint8_t *block = event_idx == 0 ? ring[0] : ring[CONFIG_APP_BLOCK_SAMPLES];
-
-	if (event_idx == 1 && first_cycle) {
-		/* COMPARE2 = 1 also fires at the very first transaction */
-		first_cycle = false;
-		return;
-	}
-
-	for (int i = 0; i < CONFIG_APP_BLOCK_SAMPLES; i++) {
-		const uint8_t *s = block + i * SENSOR_BURST_LEN;
-
-#if defined(CONFIG_APP_QUEUE_FRESH_ONLY)
-		/* TIMER faster than the ODR re-reads the previous sample: the
-		 * data-ready bit in the burst's STATUS byte tells them apart. */
-		if ((s[sensor->fresh_offset] & sensor->fresh_mask) == 0) {
-			skipped++;
-			continue;
-		}
-#endif
-		if (k_msgq_put(&sample_q, s, K_NO_WAIT) != 0) {
-			dropped++;
-		}
-	}
-}
-
-static void egu_irq_wrapper(const void *arg)
-{
-	nrfx_egu_irq_handler((nrfx_egu_t *)arg);
-}
-
-#if defined(CONFIG_ZERO_LATENCY_IRQS)
-/* Zero-latency IRQs must be direct ISRs (no kernel entry/exit, no scheduling) */
-ISR_DIRECT_DECLARE(cnt_direct_isr)
-{
-	nrfx_timer_irq_handler(&timer_cnt);
-	return 0;
-}
-#endif
-
-static int counter_init(void)
-{
-	nrfx_timer_config_t cfg = NRFX_TIMER_DEFAULT_CONFIG(NRFX_MHZ_TO_HZ(1));
-	int err;
-
-	cfg.mode = NRF_TIMER_MODE_COUNTER;
-	cfg.bit_width = NRF_TIMER_BIT_WIDTH_32;
-#if defined(CONFIG_ZERO_LATENCY_IRQS)
-	IRQ_DIRECT_CONNECT(DT_IRQN(CNT_TIMER_NODE), 0, cnt_direct_isr, IRQ_ZERO_LATENCY);
-#else
-	IRQ_CONNECT(DT_IRQN(CNT_TIMER_NODE), DT_IRQ(CNT_TIMER_NODE, priority),
-		    timer_irq_wrapper, &timer_cnt, 0);
-#endif
-	err = nrfx_timer_init(&timer_cnt, &cfg, cnt_handler);
-	if (err < 0) {
-		return err;
-	}
-	/* Only COMPARE1 (wrap) interrupts; block-complete compares go to the EGU */
-	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL0, CONFIG_APP_BLOCK_SAMPLES + 1,
-				    0, false);
-	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL1, 2 * CONFIG_APP_BLOCK_SAMPLES,
-				    NRF_TIMER_SHORT_COMPARE1_CLEAR_MASK, true);
-	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL2, 1, 0, false);
-
-	/* Queue work: block-complete events reach the EGU through DPPI */
-	IRQ_CONNECT(DT_IRQN(EGU_NODE), DT_IRQ(EGU_NODE, priority), egu_irq_wrapper, &egu, 0);
-	err = nrfx_egu_init(&egu, 0 /* priority set by IRQ_CONNECT */, egu_handler, NULL);
-	if (err < 0) {
-		return err;
-	}
-	nrfx_egu_int_enable(&egu, NRF_EGU_INT_TRIGGERED0 | NRF_EGU_INT_TRIGGERED1);
-	nrfx_timer_clear(&timer_cnt);
-	nrfx_timer_enable(&timer_cnt);
-	return 0;
-}
-
-uint32_t spim_dppi_total_xfers(void)
-{
-	/* Transactions started (the one in flight, if any, included) */
-	uint32_t in_cycle = nrfx_timer_capture(&timer_cnt, NRF_TIMER_CC_CHANNEL3);
-	return cycles_done * 2 * CONFIG_APP_BLOCK_SAMPLES + in_cycle;
-}
-
-uint32_t spim_dppi_dropped(void)
-{
-	return dropped;
-}
-
-uint32_t spim_dppi_skipped(void)
-{
-	return skipped;
-}
-
-uint32_t spim_dppi_late_wraps(void)
-{
-	return late_wraps;
-}
-
-
 void spim_dppi_set_period_us(uint32_t period_us)
 {
 	nrfx_timer_disable(&timer_trig);
@@ -407,7 +426,6 @@ void spim_dppi_set_period_us(uint32_t period_us)
 			   nrfx_timer_us_to_ticks(&timer_trig, period_us), false);
 	nrfx_timer_enable(&timer_trig);
 }
-
 
 /* ---- Trigger (TIMER COMPARE0 event), DPPI, start ----------------------- */
 
@@ -433,15 +451,10 @@ static int trigger_init(uint32_t *eep)
 
 int spim_dppi_start(void)
 {
-	nrfx_gppi_handle_t h_start, h_count __unused;
+	nrfx_gppi_handle_t h_start;
 	uint32_t eep;
 	int err;
 
-	err = counter_init();
-	if (err) {
-		LOG_ERR("counter init: %d", err);
-		return err;
-	}
 	err = trigger_init(&eep);
 	if (err) {
 		LOG_ERR("trigger init: %d", err);
@@ -449,63 +462,37 @@ int spim_dppi_start(void)
 	}
 
 	/* Repeated burst: the driver sets the buffers once and steps aside */
-	blocking_phase = false;
 	memcpy(burst_tx, sensor->burst_tx, sensor->burst_tx_len);
 	nrfx_spim_xfer_desc_t xfer = {
 		.p_tx_buffer = burst_tx, .tx_length = sensor->burst_tx_len,
 		.p_rx_buffer = ring[0], .rx_length = SENSOR_BURST_LEN,
 	};
 	uint32_t flags = NRFX_SPIM_FLAG_HOLD_XFER | NRFX_SPIM_FLAG_REPEATED_XFER |
-			 NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER;
-	flags |= NRFX_SPIM_FLAG_RX_POSTINC;   /* EasyDMA array list on RX */
+			 NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER | NRFX_SPIM_FLAG_RX_POSTINC;
 	err = nrfx_spim_xfer(&spim, &xfer, flags);
 	if (err < 0) {
 		LOG_ERR("arming repeated transfer: %d", err);
 		return err;
 	}
-	/* From here on the peripheral is driven by DPPI only. The driver may have
-	 * left STARTED (nRF54L errata workaround) or END interrupts enabled; with
+	/* From here on the peripheral is driven by DPPI. The driver may have left
+	 * STARTED (nRF54L errata workaround) or END interrupts enabled; with
 	 * nobody servicing them they would storm. */
 	nrf_spim_int_disable(spim.p_reg, 0xFFFFFFFF);
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
+	nrf_spim_event_clear(spim.p_reg, READY_EVENT);
+	blocking_phase = false;
 
-	/* trigger event -> SPIM START ; SPIM STARTED / DMA.RX.READY -> counter COUNT */
+	/* The only DPPI connection: trigger event -> SPIM START */
 	err = nrfx_gppi_conn_alloc(eep, nrfx_spim_start_task_address_get(&spim), &h_start);
 	if (err < 0) {
 		return err;
 	}
-	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, CNT_EVENT),
-				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
-				   &h_count);
-	if (err < 0) {
-		return err;
-	}
-	/* counter COMPARE0/2 (block A/B complete) -> EGU TRIGGER0/1 -> queue ISR */
-	nrfx_gppi_handle_t h_blk0, h_blk1;
-
-	err = nrfx_gppi_conn_alloc(
-		nrfx_timer_compare_event_address_get(&timer_cnt, NRF_TIMER_CC_CHANNEL0),
-		nrfx_egu_task_address_get(&egu, NRF_EGU_TASK_TRIGGER0), &h_blk0);
-	if (err < 0) {
-		return err;
-	}
-	err = nrfx_gppi_conn_alloc(
-		nrfx_timer_compare_event_address_get(&timer_cnt, NRF_TIMER_CC_CHANNEL2),
-		nrfx_egu_task_address_get(&egu, NRF_EGU_TASK_TRIGGER1), &h_blk1);
-	if (err < 0) {
-		return err;
-	}
-	nrfx_gppi_conn_enable(h_blk0);
-	nrfx_gppi_conn_enable(h_blk1);
-	nrfx_gppi_conn_enable(h_count);
 	nrfx_gppi_conn_enable(h_start);
 
 	nrfx_timer_clear(&timer_trig);
 	nrfx_timer_enable(&timer_trig);
-	LOG_INF("DPPI connected, %s consumption, burst %u bytes, counting %s%s",
-		"queue (wrap ISR + EGU)",
-		SENSOR_BURST_LEN, CNT_EVENT_NAME,
-		IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
+	LOG_INF("DPPI connected, burst %u bytes, ring %u slots, drain every %u us, wrap on %s",
+		SENSOR_BURST_LEN, RING_SLOTS, CONFIG_APP_DRAIN_PERIOD_US, READY_EVENT_NAME);
 	return 0;
 }

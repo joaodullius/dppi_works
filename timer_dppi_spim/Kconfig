@@ -48,27 +48,38 @@ config APP_SWEEP_STEP_S
 	int "Seconds per sweep step"
 	default 10
 
-config APP_BLOCK_SAMPLES
-	int "Samples per block (interrupt every N samples)"
-	default 64
-	range 1 512
+config APP_DRAIN_PERIOD_US
+	int "Drain period in microseconds"
+	default 10000
+	range 100 1000000
 	help
-	  N = 1 gives one interrupt per sample (lowest latency, highest CPU
-	  cost); larger N amortizes the interrupt over a block.
+	  A thread wakes up every period, reads the EasyDMA pointer, pushes the
+	  slots that arrived into the message queue and arms the ring wrap.
+	  Delivery latency = one period; interrupts per second = 1 / period
+	  (wake-up) + 1 / period (wrap), independent of the sample rate.
+
+config APP_RING_SLOTS
+	int "Ring size in samples"
+	default 256
+	range 8 4096
+	help
+	  Must hold the samples of more than one drain period with slack for
+	  timer jitter and scheduling delay; 8 guard slots are added after it.
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"
 	default 256
 	help
-	  Must hold at least two blocks plus the worst-case consumer delay.
+	  Must hold at least one drain's worth of samples plus the worst-case
+	  consumer delay.
 
 config APP_QUEUE_FRESH_ONLY
-	bool "Drop repeated samples in the block ISR (data-ready bit clear)"
+	bool "Drop repeated samples in the drain (data-ready bit clear)"
 	default n
 	help
 	  Transactions faster than the sensor ODR re-read the previous sample.
-	  With this option the ISR checks the data-ready bit in the burst's
-	  STATUS byte and only queues new samples, so the queue and the
+	  With this option the drain thread checks the data-ready bit in the
+	  burst's STATUS byte and only queues new samples, so the queue and the
 	  consumer see the sensor's real rate. Skipped samples are counted.
 
 config APP_SPI_FREQ_HZ
@@ -95,9 +106,9 @@ config APP_COUNT_STARTED
 	bool "Count SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
 	default n
 	help
-	  On nRF54L the counter normally counts DMA.RX.READY, the event the
+	  On nRF54L the ring wrap is armed on DMA.RX.READY, the event the
 	  datasheet defines as "registers can be written for the next
-	  sequence". This option counts STARTED instead, to compare the two
+	  sequence". This option uses STARTED instead, to compare the two
 	  (wrap latency, late wraps). No effect on nRF53/52, which have no
 	  DMA.RX.READY event.
 
@@ -118,8 +129,8 @@ config APP_WRAP_LATENCY_STATS
 	help
 	  Runs the trigger TIMER at 16 MHz and, in the wrap ISR, captures the
 	  time elapsed since the trigger COMPARE that started the transaction:
-	  DPPI -> SPIM START -> STARTED/DMA.RX.READY -> DPPI -> counter COMPARE
-	  -> IRQ -> ISR. Min/avg/max are printed with the reports. Used to
+	  DPPI -> SPIM START -> STARTED/DMA.RX.READY -> IRQ -> wrap ISR.
+	  Min/avg/max are printed with the reports. Used to
 	  compare the Cortex-M33 and the FLPR (RISC-V) on the nRF54L15.
 
 config APP_REQUEST_HFXO

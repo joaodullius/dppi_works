@@ -1,8 +1,8 @@
 /*
  * Hardware engine: SPIM with hardware CSN, repeated EasyDMA burst started
- * through DPPI by the GPIOTE IN event of the sensor's data-ready pin, transaction starts
- * counted by a TIMER in counter mode; every sample goes to a k_msgq in
- * blocks of N.
+ * through DPPI by the GPIOTE IN event of the sensor's data-ready pin. The
+ * bursts land in a ring (RX pointer post-increment); a periodic drain thread
+ * moves them into a k_msgq and re-arms the ring wrap on the SPIM READY IRQ.
  */
 #ifndef SPIM_DPPI_H_
 #define SPIM_DPPI_H_
@@ -18,7 +18,7 @@ int spim_dppi_init(void);
 /* Arm the repeated burst, connect DPPI, start the trigger. Returns errno. */
 int spim_dppi_start(void);
 
-/* Total SPIM transactions completed since start (hardware counter) */
+/* Total SPIM transactions started since start (laps * ring + DMA pointer) */
 uint32_t spim_dppi_total_xfers(void);
 
 
@@ -26,7 +26,9 @@ uint32_t spim_dppi_total_xfers(void);
 extern struct k_msgq sample_q;
 /* Samples the ISR could not queue because the queue was full */
 uint32_t spim_dppi_dropped(void);
-/* Block wraps that ran later than one sample period (samples lost) */
+/* Wraps written after the next START had begun (one sample went to a guard slot) */
 uint32_t spim_dppi_late_wraps(void);
+/* Drains that found the DMA past the ring end (drain period too long for the ring) */
+uint32_t spim_dppi_overflows(void);
 
 #endif /* SPIM_DPPI_H_ */

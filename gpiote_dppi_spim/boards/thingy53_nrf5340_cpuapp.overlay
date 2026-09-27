@@ -10,8 +10,6 @@
 / {
 	chosen {
 		app,accel = &adxl362;
-		app,timer-count = &timer2;
-		app,egu = &egu0;
 	};
 };
 

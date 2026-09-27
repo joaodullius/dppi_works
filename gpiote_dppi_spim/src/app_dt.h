@@ -3,8 +3,6 @@
  * set by the board overlay:
  *   app,accel        the accelerometer node on its SPI bus (int1-gpios /
  *                    irq-gpios = data-ready pin, cs-gpios on the bus = CSN)
- *   app,timer-count  TIMER used as hardware counter of SPIM END events
- *   app,egu          EGU that turns block-complete events into the queue ISR
  */
 #ifndef APP_DT_H_
 #define APP_DT_H_
@@ -14,10 +12,7 @@
 
 #define ACCEL_NODE      DT_CHOSEN(app_accel)
 #define BUS_NODE        DT_BUS(ACCEL_NODE)
-#define CNT_TIMER_NODE  DT_CHOSEN(app_timer_count)
-#define EGU_NODE        DT_CHOSEN(app_egu)
 
-BUILD_ASSERT(DT_NODE_EXISTS(EGU_NODE), "chosen app,egu is missing in the board overlay");
 
 BUILD_ASSERT(DT_NODE_EXISTS(ACCEL_NODE), "chosen app,accel is missing in the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_PROP(BUS_NODE, cs_gpios), "the SPI bus needs cs-gpios (hardware CSN pin)");
