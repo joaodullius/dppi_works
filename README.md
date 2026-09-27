@@ -158,6 +158,40 @@ arquitetura, não de desempenho.
 | SPIM20/21/22 | PERI | 16 MHz | 8 MHz (`PRESCALER` 2..126) | P1 (20/21 também P2) | DPPIC20, 16 canais | Mesmo domínio do GPIOTE20 e dos TIMER2x: caminho inteiro sem PPIB. É o que os exemplos usam. |
 | SPIM30 | LP | 16 MHz | 8 MHz | P0 | DPPIC30, 4 canais | Mesmo domínio do GPIOTE30 (P0, 4 canais). Sem TIMER no domínio LP: o contador fica em PERI via PPIB22/PPIB30. |
 
+**O que dá para testar na TAG.** Só a SPIM22. O BMI270 está ligado à
+SPIM22 pelos pinos P1.05/06/08, CSN P1.07 e INT P1.04, e os únicos pinos
+expostos em pontos de teste são P0.01, P0.02, P0.04, P1.02, P1.03, P1.13,
+P1.14, P2.05, P2.06 e P2.07 (documentação da TAG, confirmada no MCP). A
+SPIM00 usa pinos dedicados do P2: SCK P2.01 ou P2.06, SDO P2.02 ou P2.08,
+SDI P2.04 ou P2.09, CSN P2.05 ou P2.10; dos expostos só há SCK e CSN, sem
+SDO/SDI. A SPIM30 precisa de quatro pinos no P0 e há três expostos. Logo
+nem com fios se liga um sensor à SPIM00 ou à SPIM30 na TAG. Os resultados
+para essas duas instâncias abaixo são teóricos; o teste em hardware fica
+para o nRF54L15 DK com um sensor ligado por fio.
+
+**Como seria no nRF54L15 DK.** O SoC é QFN48 (P0.00 a P0.04, P1.00 a
+P1.14, P2.00 a P2.10) e os três ports estão em headers. SPIM00: os pinos
+P2.06/08/09/10 (conjunto alternativo, compartilhado com o trace) vêm
+conectados por padrão; P2.01/02/04/05 vão para a flash externa e exigem o
+Board Configurator. Para 32 MHz os pinos precisam de drive E0/E1 no
+`PIN_CNF` (datasheet, "Dedicated pins"). SPIM30: P0.00 a P0.03 são a UART0
+do depurador, a desconectar no Board Configurator, e P0.04 é o botão 3, que
+serve de INT com GPIOTE30. Nada muda no código além do overlay: `chosen
+app,accel` num nó sob `spi00` ou `spi30`, `pinctrl` com os pinos acima e
+`cs-gpios` no port certo; a GPPI da nrfx 4.0 resolve as ligações entre
+domínios pelo PPIB sozinha (`helpers/nrfx_gppi_routes.h`).
+
+**Estimativa a 64 k amostras/s (rajada de 11 bytes, período 15,6 µs).**
+
+| Instância | SCK | Transação | Ocupação | Folga para o wrap | Canais DPPI | Observações |
+|---|---|---|---|---|---|---|
+| SPIM22 (PERI) | 8 MHz | ≈ 12,3 µs | 80 % | ≈ 12 µs (a transação) | 4 de 16 no DPPIC20 | Medido no nRF5340 com o mesmo perfil: 71,4 k/s válidos. Sem PPIB. |
+| SPIM00 (MCU) | 32 MHz | ≈ 3,4 µs (2,75 + START) | 22 % | ≈ 3 µs (a transação), mas o intervalo até o próximo `START` é de 12 µs | 2 no DPPIC00 (START, RX.READY) + PPIB01/21 + 2 no DPPIC20 | Errata 8 sempre ativa: CPHA = 1 ou primeiro bit 0. O domínio MCU fica acordado pela SPIM; o disparo em PERI cruza o PPIB (latência extra, não especificada). Com o core dormindo entre blocos, a RRAM em standby ou o FLPR são obrigatórios (17 µs > 15,6 µs). |
+| SPIM30 (LP) | 8 MHz | ≈ 12,3 µs | 80 % | ≈ 12 µs | 2 de 4 no DPPIC30 + PPIB30/22 + 2 no DPPIC20 | Sensor no P0 com GPIOTE30 (4 canais). O contador e a EGU ficam em PERI, então PERI acorda a cada transação; só o modo LATEST sem contador deixa PERI dormir. |
+
+A 400 ou 1600 Hz as três instâncias funcionam igual; a diferença é
+consumo (LP × PERI × MCU acordados) e não desempenho.
+
 **Desempenho.** Só a SPIM00 muda o teto: com 8 MHz o limite é 52,6 k/s
 para 17 B e ~80 k/s para 11 B; a 32 MHz caberiam 4× mais transações por
 segundo, ou a mesma taxa com 4× mais folga para o wrap. Para 64 kHz com
