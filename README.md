@@ -246,12 +246,29 @@ Corrente média do SoC em µA pelo modelo de `docs/POWER.md` (rajada de
 | 16 000 | 57 | 72 | 366 | 348 | 343 | 637 |
 | 32 000 | 106 | 121 | 410 | 547 | 542 | 831 |
 | 64 000 | 205 | 220 | 497 | 946 | 941 | 1 218 |
+| *QUEUE drenado por tempo (sem TIMER), SPIM30 / SPIM22* | | | | | | |
+| 100 / 400 / 1 600 / 6 400 | | | | 9 / 13 / 28 / 88 | 24 / 28 / 43 / 103 | |
 
-Em taxa baixa e modo LATEST a SPIM30 gasta 3× menos que a SPIM22; acima
-de 16 k/s o barramento domina e as duas se igualam; no modo QUEUE o
-contador em PERI apaga a vantagem em qualquer taxa; a SPIM00 paga 0,3 mA
-pelo domínio MCU em qualquer taxa. Quando a SPIM00 compensa está em
-[docs/POWER.md](docs/POWER.md#quando-a-spim00-faz-sentido).
+**LATEST e QUEUE não são a mesma entrega.** LATEST dá só o valor atual,
+em qualquer taxa: não existe taxa em que ele entregue todas as amostras. Se
+a aplicação precisa de cada amostra, a comparação é entre os dois QUEUE:
+
+- **Até ~10 k/s, QUEUE drenado por tempo**: sem TIMER contador, a CPU
+  acorda por GRTC a cada T ms, lê o `RXD.PTR` para saber quantas amostras
+  o EasyDMA escreveu e empurra o bloco; o wrap é feito no próprio drenar,
+  logo após um `DMA.RX.READY`, com o anel dimensionado para mais de um T.
+  Custa LATEST mais a CPU por amostra: 13 µA a 400/s na SPIM30 em vez de
+  154 µA com o contador. É o desenho do notificador por `k_timer` da
+  biblioteca PPI Sequencer do NCS; não está implementado neste repo
+  (modelo).
+- **Acima de ~10 k/s, QUEUE com contador em hardware** (o implementado):
+  o prazo do wrap é um período e precisa do `COMPARE` do contador; ali a
+  CPU por amostra já domina e os 121 µA do TIMER deixam de pesar.
+
+Em taxa baixa a SPIM30 gasta 3× menos que a SPIM22 nos dois modos sem
+contador; acima de 16 k/s o barramento domina e as duas se igualam; a
+SPIM00 paga 0,3 mA pelo domínio MCU em qualquer taxa. Quando a SPIM00
+compensa está em [docs/POWER.md](docs/POWER.md#quando-a-spim00-faz-sentido).
 
 ## Caso de alta taxa: ADXL382 a 64 kHz
 

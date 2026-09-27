@@ -137,7 +137,28 @@ SPIM30) e CPU de 3,6 µs por amostra a 2,6 mA. Corrente média do SoC em µA.
 | 32 000 | 106 | 121 | 410 | 547 | 542 | 831 |
 | 64 000 | 205 | 220 | 497 | 946 | 941 | 1 218 |
 
+QUEUE drenado por tempo (sem TIMER contador: a CPU acorda por GRTC a cada
+T ms, lê o `RXD.PTR`, empurra o bloco e faz o wrap logo após um
+`DMA.RX.READY`; custa LATEST + CPU por amostra + ~1 µA de wake-ups; modelo,
+não implementado no repo; válido até ~10 k/s, onde o prazo do wrap passa a
+exigir o contador em hardware):
+
+| Amostras/s | SPIM30 QUEUE por tempo | SPIM22 QUEUE por tempo |
+|---|---|---|
+| 100 | 9 | 24 |
+| 400 | 13 | 28 |
+| 1 600 | 28 | 43 |
+| 6 400 | 88 | 103 |
+| 16 000 | 207 | 222 |
+| 32 000 | 406 | 421 |
+| 64 000 | 805 | 820 |
+
 Como ler:
+
+- **LATEST não entrega todas as amostras em taxa nenhuma**: é o valor
+  atual no momento da leitura. Se cada amostra importa, a escolha é entre
+  os dois QUEUE, e o ponto de corte é ~10 k/s: abaixo, drenar por tempo
+  (≈ LATEST + CPU); acima, contador em hardware pelo prazo do wrap.
 
 - **Em taxas baixas a SPIM30 ganha por 3×** (8 µA contra 23 µA a 100/s),
   porque é a única que deixa PERI dormindo; o valor absoluto depende do
