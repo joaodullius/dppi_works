@@ -77,8 +77,9 @@ coerente quando precisa. No modo QUEUE o EasyDMA em *array list* enche um
 anel em ping-pong de 2N amostras, com mais N de folga. Um TIMER em modo
 contador conta, por transação, o evento que libera os registradores de
 ponteiro: `DMA.RX.READY` no nRF54L, `STARTED` no nRF5340. No início da última transação do ciclo
-uma ISR zero-latency reposiciona o ponteiro (wrap) com a transação inteira
-de margem, que é a janela segura do datasheet para escrever o `RXD.PTR`; a
+uma ISR zero-latency reposiciona o ponteiro (wrap) com um período inteiro
+de margem, do `DMA.RX.READY`/`STARTED` até o próximo `START`, que é a
+janela segura do datasheet para escrever o `RXD.PTR`; a
 cada bloco completo a EGU, acionada por DPPI, roda a ISR que alimenta a
 fila (`k_msgq`).
 
@@ -92,7 +93,7 @@ o tempo de CSN, cerca de 18,5 µs. Cabem 52,6 k transações por segundo
 nRF54L15, ela para. Com rajada de 11 bytes (ADXL362) o nRF5340 chegou a
 71,4 k/s (14 µs); abaixo disso o `START` reinicia a transação em curso e os
 dados deixam de ser válidos, embora os `STARTED` continuem a ser contados.
-O wrap do anel do modo QUEUE não limita: tem a transação inteira de margem.
+O wrap do anel do modo QUEUE não limita: tem um período inteiro de margem.
 
 ![Teto do barramento](docs/teto_barramento.svg)
 
@@ -101,6 +102,21 @@ O wrap do anel do modo QUEUE não limita: tem a transação inteira de margem.
 | Thingy:53 M33 (ADXL362, 11 B) | 1000/s exato | 10000/s, fresh ≈ 380 | **71,4 k/s** (14 µs), `late_wraps` 0 de 25 a 14 µs |
 | Tag M33 (BMI270, 17 B) | 1000/s exato | 10000/s, fresh 402 | **52,6 k/s** (19 µs), `late_wraps` 0; a 18 µs a SPIM para |
 | Tag FLPR (BMI270) | 10001/s (HFXO pedido pelo app core) | — | **52,6 k/s** (19 µs), `late_wraps` 0 sem ZLI |
+
+## Como escolher
+
+Parâmetros do sensor: pino de data-ready, ODR, bytes por rajada, SCK
+máximo, taxa e latência exigidas, orçamento de energia. Com eles:
+
+| Pergunta | Escolha | Onde está medido |
+|---|---|---|
+| O sensor tem pino de data-ready? | Sim: [`gpiote_dppi_spim`](gpiote_dppi_spim/README.md). Uma transação por amostra, sem TIMER nem HFXO, sem repetidas. Não, ou taxa fixa desacoplada do sensor: [`timer_dppi_spim`](timer_dppi_spim/README.md) com timer 5 a 10 % acima do ODR nominal e filtro `APP_QUEUE_FRESH_ONLY`. | Caso 1 e Caso 2, Timer × ODR |
+| Precisa de todas as amostras ou só da última? | Só a última: modo LATEST, sem interrupção nem prazo. Stream: modo QUEUE com N tal que a latência de entrega (N períodos) e o custo de IRQ (taxa/N) caibam; N = 16 até 1600 Hz, N = 64 a 64 k/s. | Modo QUEUE, N = 1 |
+| A rajada cabe no período a 8 MHz? | Transação ≈ bytes × 1 µs + 1,5 µs. Se ocupar mais de ~80 % do período, subir o SCK: SPIM4 a 16 ou 32 MHz no nRF5340; SPIM00 a 32 MHz no nRF54L15 (errata 8: CPHA = 1 ou primeiro bit 0). | Teto do barramento |
+| Qual SPIM no nRF54L15? | Taxa baixa e modo LATEST: SPIM30 com GPIOTE30 (LP dorme PERI). Caso geral: SPIM2x com GPIOTE20 (tudo em PERI, sem PPIB). Rajada longa ou > 80 k/s: SPIM00. | Qual SPIM, POWER.md |
+| Período menor que 18 µs em modo QUEUE no nRF54L15? | O M33 em idle acorda em 17 µs: RRAM em standby (`APP_RRAM_STANDBY`) ou FLPR. Acima de 18 µs o M33 padrão basta. | M33 × FLPR |
+| Precisa de latência determinística de ISR? | FLPR (2,43 µs constantes, sem ZLI) ou M33 com RRAM em standby (2,75 µs). | M33 × FLPR |
+| Sensor a 64 kHz (ADXL382)? | Data-ready → SPIM a 16 ou 32 MHz, modo QUEUE com N = 64, ZLI no M33; no nRF54L15 SPIM00 e RRAM em standby ou FLPR. | ADXL382 |
 
 ## nRF54L15: Cortex-M33 × FLPR (RISC-V)
 
@@ -132,15 +148,15 @@ executa da RAM e não tem o problema. `DMA.RX.READY` e `STARTED` dão a mesma
 latência (±0,4 µs).
 
 **Isso perde dados?** Não nas taxas medidas. A aquisição em si não passa
-pela CPU; o único prazo de ISR é o wrap do anel no modo QUEUE, e ele tem a
-transação inteira mais o intervalo até o próximo `START` de margem. Com
+pela CPU; o único prazo de ISR é o wrap do anel no modo QUEUE, e ele tem um
+período inteiro de margem, do `DMA.RX.READY` até o próximo `START`. Com
 17 µs de latência o wrap só atrasaria com período menor que ~18 µs, ou
 seja, acima de ~55 k transações/s com o core dormindo entre elas. Nessa
 faixa o core já não dorme (a partir de ~40 k/s a latência cai para 2 µs) e
 o barramento da TAG para em 52,6 k/s. Zero `late_wraps` em todos os
-passos. O caso que precisa da RRAM em standby ou do FLPR: rajadas curtas em
-SPIM00 a 32 MHz com período abaixo de 18 µs (ADXL382 a 64 kHz é 15,6 µs) e
-N grande, porque aí o core dorme entre blocos. No modo LATEST não há prazo
+passos. O caso que precisa da RRAM em standby ou do FLPR: período abaixo de
+18 µs (ADXL382 a 64 kHz é 15,6 µs) com N grande, em qualquer SPIM, porque
+aí o core dorme entre blocos. No modo LATEST não há prazo
 nenhum. Um wrap atrasado desloca as amostras um slot dentro do anel, não
 corrompe memória.
 
@@ -257,9 +273,11 @@ do sensor e a folga do barramento.
    DPPIC00. A GPPI resolve a ligação; a latência deve ser confirmada.
 4. **Modo QUEUE**: `APP_BLOCK_SAMPLES = 64` (1000 IRQ/s), `APP_QUEUE_DEPTH ≥
    512`, `CONFIG_ZERO_LATENCY_IRQS=y`. O wrap é feito logo após o `STARTED` (nRF5340) ou `DMA.RX.READY` (nRF54L)
-   da última transação do ciclo e tem a transação inteira de margem (12 µs
-   a 8 MHz, 7 µs a 16 MHz). O contador `late_wraps` no log mostra se algum
-   wrap ficou para trás. O modo LATEST não tem prazo.
+   da última transação do ciclo e tem um período inteiro de margem
+   (15,6 µs, independente do SCK). Como isso é menos que os 17 µs de
+   wake-up do M33 em idle, o M33 precisa da RRAM em standby ou do FLPR (ver
+   a seção M33 × FLPR). O contador `late_wraps` no log mostra se algum wrap
+   ficou para trás. O modo LATEST não tem prazo.
 5. **Verificação**: `xfers` no log deve dar 64 000/s mais ou menos a
    tolerância do oscilador do sensor, com `fresh = queued` e `late_wraps`
    em 0.

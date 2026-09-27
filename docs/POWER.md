@@ -2,7 +2,8 @@
 
 Estimativas de corrente média do SoC para cada combinação disparo × consumo,
 a 400 amostras/s (caso do ADXL362/BMI270) e na taxa máxima medida no
-barramento (50 k transações/s na Tag, 71 k no Thingy). Só o SoC: a corrente
+barramento (52,6 k transações/s na Tag, 71,4 k no Thingy; as tabelas usam
+50 k e 71 k arredondados). Só o SoC: a corrente
 do sensor não entra. Valores típicos a 3 V, 25 °C, DC/DC, conforme as
 tabelas "Current consumption" dos datasheets (fonte: MCP da Nordic,
 `ps_nrf54l15` e `ps_nrf5340`).
@@ -69,14 +70,14 @@ Leituras:
   conservadora de SPIM (85 % de ocupação), e o custo de CPU só aparece se as
   repetidas forem para a fila: o filtro na ISR vale ~0,4 mA.
 - O FLPR não reduz consumo — acrescenta o bloco VPR — mas cumpre o prazo de
-  wrap a 20 µs sem ZLI e libera o M33.
+  wrap a 19 µs sem ZLI e libera o M33.
 - **Latência × consumo no M33.** Em low-power idle (2,9 µA) a RRAM fica em
   power-down e uma ISR que acorda o core leva ~17 µs (`tIDLE2CPU` 13 µs).
   As duas saídas custam corrente: constant latency = 0,55 mA em idle
   (`ION_IDLE11`) e, medido, não corrige sozinha; RRAM em standby
   (`POWER.LOWPOWERCONFIG.MODE = Standby`) corrige (2,75 µs) e o datasheet
   não publica seu custo — medir com PPK2. Para os casos deste repo a
-  latência não perde dados (o wrap tem a transação inteira de margem e o
+  latência não perde dados (o wrap tem um período inteiro de margem e o
   core não dorme acima de ~40 k/s), então a configuração padrão é a certa;
   RRAM standby só para prazos < 18 µs com o core dormindo entre eventos.
 - **Domínio da SPIM.** SPIM30 (LP, P0) com GPIOTE30 é o único caminho que
@@ -231,8 +232,9 @@ descrita; para 16 MHz seria preciso a SPIM00 (domínio MCU), sem número
 publicado.
 
 Leituras: no nRF5340 o barramento a 8 MHz e o TIMER contador dominam; subir
-para 16 MHz na SPIM4 economiza ~0,6 mA e, mais importante, dobra a folga do
-margem do wrap (a transação inteira: 12 → 7 µs). O modo LATEST poupa a CPU inteira (0,8 mA) mas entrega só
+para 16 MHz na SPIM4 economiza ~0,6 mA e reduz a ocupação do barramento de
+80 % para 45 %; a margem do wrap é um período (15,6 µs) nos dois casos. O
+modo LATEST poupa a CPU inteira (0,8 mA) mas entrega só
 o último valor; para stream a 64 k/s o modo QUEUE com N = 64 é o mínimo
 razoável (N menor multiplica as IRQ). O ADXL382 em si (não incluído) consome
 na casa de 1 mA em alto desempenho — conferir no datasheet do sensor.

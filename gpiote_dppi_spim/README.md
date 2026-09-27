@@ -164,7 +164,8 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
   slots. O contador conta, por transação, o evento que libera o `.PTR`
   (`DMA.RX.READY` no nRF54L, `STARTED` no nRF5340): `COMPARE1 = 2N` (início da
   última transação do ciclo, short `CLEAR`) dispara a ISR zero-latency que
-  só reposiciona `RXD.PTR` para o slot 0, com a transação inteira de margem;
+  só reposiciona `RXD.PTR` para o slot 0, com um período inteiro de margem
+  (até o próximo `START`);
   `COMPARE0 = N+1` e `COMPARE2 = 1` (bloco A e bloco B completos) vão por
   DPPI para a EGU, cuja ISR faz o trabalho da fila. `late_wraps` conta os
   wraps feitos depois de a transação seguinte já ter começado. Como o data-ready é um nível já ativo quando o
@@ -205,8 +206,9 @@ ODR do sensor. O caso do ADXL382 a 64 kHz está no
    período a escrita da CPU coincidia às vezes com a atualização do
    hardware, o ponteiro ficava corrompido e o EasyDMA escrevia fora do anel
    (MPU/BUS fault reproduzível). Contando `STARTED`, a escrita acontece com
-   a última transação do ciclo em curso e tem a transação inteira de
-   margem; medido zero `late_wraps` até 100 k STARTs/s. A ISR continua
+   a última transação do ciclo em curso e tem um período inteiro de
+   margem, até o próximo `START`; medido zero `late_wraps` até 100 k
+   STARTs/s. A ISR continua
    zero-latency (`IRQ_DIRECT_CONNECT`) e o trabalho da fila vai para a EGU.
    A 1600 Hz nada disso é crítico, mas o mecanismo é o mesmo.
 8. **RTT**: o bloco de controle do firmware anterior fica na RAM, então o

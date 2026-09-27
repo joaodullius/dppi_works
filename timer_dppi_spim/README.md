@@ -145,8 +145,8 @@ Varredura (TAG, `bench/sweep-tag.conf`):
 ```
 
 Cada passo descarta o primeiro segundo e imprime os totais dos seguintes.
-`late_wraps` diferente de zero indica que o wrap do anel rodou depois do
-prazo.
+`late_wraps` diferente de zero indica que o wrap do anel rodou depois de a
+transação seguinte ter começado (as amostras foram para a folga do anel).
 
 ## Resultados
 
@@ -202,7 +202,7 @@ continua subindo enquanto o EasyDMA nunca entrega uma rajada inteira. O
 teto real é o barramento (11 bytes + `START` + CSN ≈ 12,3 µs → 14 µs é o
 último período com dados válidos, 71,4 k/s). O wrap do anel não limita:
 a ISR escreve o `RXD.PTR` logo após o início da última transação do ciclo
-e tem a transação inteira de margem (ver Achados).
+e tem um período inteiro de margem, até o próximo `START` (ver Achados).
 
 Tag FLPR com `hfxo_launcher` (`bench/bus-max-tag.conf`): 25058 / 40097 /
 50117 / 52759 transações por segundo de 40 a 19 µs, `late_wraps` 0, sem
@@ -265,8 +265,8 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
    escrita coincidia às vezes com a atualização do hardware, o ponteiro
    ficava corrompido e o EasyDMA escrevia fora do anel (MPU/BUS fault em
    cerca de 1,5 s, reproduzível; `late_wraps` de 2555 num build e fault
-   noutro só pela fase da ISR). Contando `STARTED`, a escrita tem a
-   transação inteira de margem: zero `late_wraps` até 100 k STARTs/s.
+   noutro só pela fase da ISR). Contando `STARTED`, a escrita tem um
+   período inteiro de margem: zero `late_wraps` até 100 k STARTs/s.
    Histórico da versão anterior: a 64 k/s a ISR tinha cerca de 14 µs para
    reposicionar `RXD.PTR`. Uma ISR comum com `k_msgq_put` em loop perdia o
    prazo e o EasyDMA escrevia fora do anel (hard fault). Solução: anel de
