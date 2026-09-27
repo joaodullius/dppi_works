@@ -232,6 +232,27 @@ O modo QUEUE precisa do TIMER contador em PERI, o que reacende o domínio
 a cada transação. Os números exatos são para medir com PPK2; a estimativa
 em [docs/POWER.md](docs/POWER.md) usa os limites que o datasheet dá.
 
+![Consumo × ODR × instância no nRF54L15](docs/consumo_vs_odr_spim_nrf54l15.svg)
+
+Corrente média do SoC em µA pelo modelo de `docs/POWER.md` (rajada de
+11 bytes, INT; LATEST sem contador; QUEUE com N = 64 e contador em PERI):
+
+| Amostras/s | SPIM30 LATEST | SPIM22 LATEST | SPIM00 LATEST | SPIM30 QUEUE | SPIM22 QUEUE | SPIM00 QUEUE |
+|---|---|---|---|---|---|---|
+| 100 | **8** | 23 | 323 | 150 | 145 | 445 |
+| 400 | **9** | 24 | 324 | 154 | 149 | 449 |
+| 1 600 | **13** | 28 | 327 | 169 | 164 | 463 |
+| 6 400 | **28** | 43 | 340 | 229 | 224 | 521 |
+| 16 000 | 57 | 72 | 366 | 348 | 343 | 637 |
+| 32 000 | 106 | 121 | 410 | 547 | 542 | 831 |
+| 64 000 | 205 | 220 | 497 | 946 | 941 | 1 218 |
+
+Em taxa baixa e modo LATEST a SPIM30 gasta 3× menos que a SPIM22; acima
+de 16 k/s o barramento domina e as duas se igualam; no modo QUEUE o
+contador em PERI apaga a vantagem em qualquer taxa; a SPIM00 paga 0,3 mA
+pelo domínio MCU em qualquer taxa. Quando a SPIM00 compensa está em
+[docs/POWER.md](docs/POWER.md#quando-a-spim00-faz-sentido).
+
 ## Caso de alta taxa: ADXL382 a 64 kHz
 
 O ADXL382 gera data-ready a até 64 kHz (16, 32 ou 64 kHz selecionáveis). O

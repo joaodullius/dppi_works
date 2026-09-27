@@ -550,8 +550,87 @@ def c1_m33_vs_flpr():
     print("wrote m33_vs_flpr_nrf54l15.svg")
 
 
+def c2_spim_domains_vs_rate():
+    """Line chart: modelled SoC current vs sample rate for SPIM30 / SPIM22 / SPIM00, LATEST and QUEUE (docs/POWER.md)."""
+    import math
+    h = 520
+    rates = [100, 400, 1600, 6400, 16000, 32000, 64000]
+    series = [  # name, values (uA), color, dashed
+        ("SPIM30 LATEST", [8, 9, 13, 28, 57, 106, 205], OK, False),
+        ("SPIM22 LATEST", [23, 24, 28, 43, 72, 121, 220], BLUE, False),
+        ("SPIM00 LATEST", [323, 324, 327, 340, 366, 410, 497], OFF, False),
+        ("SPIM30 QUEUE", [150, 154, 169, 229, 348, 547, 946], OK, True),
+        ("SPIM22 QUEUE", [145, 149, 164, 224, 343, 542, 941], BLUE, True),
+        ("SPIM00 QUEUE", [445, 449, 463, 521, 637, 831, 1218], OFF, True),
+    ]
+    p = [defs(), "<rect width='100%' height='100%' fill='white'/>",
+         header("nRF54L15 — corrente média do SoC × amostras/s por instância de SPIM (modelo de docs/POWER.md)",
+                "Caso 1 (data-ready), rajada de 11 bytes, 8 MHz nas SPIM2x/30 e 32 MHz na SPIM00; LATEST sem contador, QUEUE com N = 64 e contador TIMER21 em PERI")]
+    ax, ay, aw, ah = 84, 96, 600, 330
+    xmin, xmax = math.log10(100), math.log10(64000)
+    ymin, ymax = math.log10(5), math.log10(2000)
+
+    def X(r):
+        return ax + aw * (math.log10(r) - xmin) / (xmax - xmin)
+
+    def Y(v):
+        return ay + ah - ah * (math.log10(v) - ymin) / (ymax - ymin)
+
+    for v in (10, 100, 1000):
+        p.append(f"<line x1='{ax}' y1='{Y(v):.1f}' x2='{ax+aw}' y2='{Y(v):.1f}' stroke='{LINE}' stroke-width='1'/>")
+        p.append(f"<text x='{ax-8}' y='{Y(v)+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v} µA</text>")
+        for m in (2, 5):
+            vv = v * m
+            if vv < 2000:
+                p.append(f"<line x1='{ax}' y1='{Y(vv):.1f}' x2='{ax+aw}' y2='{Y(vv):.1f}' stroke='{LINE}' stroke-width='0.6' stroke-dasharray='2 4'/>")
+    for r in rates:
+        p.append(f"<line x1='{X(r):.1f}' y1='{ay}' x2='{X(r):.1f}' y2='{ay+ah}' stroke='{LINE}' stroke-width='0.6' stroke-dasharray='2 4'/>")
+        lab = f"{r//1000} k" if r >= 1000 else str(r)
+        p.append(f"<text x='{X(r):.1f}' y='{ay+ah+16}' text-anchor='middle' fill='{SLATE}' {font(10.5)}>{lab}</text>")
+    p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+aw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
+    p.append(f"<line x1='{ax}' y1='{ay}' x2='{ax}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
+    p.append(f"<text x='{ax+aw/2:.1f}' y='{ay+ah+34}' text-anchor='middle' fill='{INK}' {font(11, bold=True)}>amostras por segundo (escala log)</text>")
+    p.append(f"<text x='20' y='{ay-12}' fill='{INK}' {font(11, bold=True)}>corrente média (escala log)</text>")
+    for name, vals, col, dashed in series:
+        pts = " ".join(f"{X(r):.1f},{Y(v):.1f}" for r, v in zip(rates, vals))
+        dash = " stroke-dasharray='6 4'" if dashed else ""
+        p.append(f"<polyline points='{pts}' fill='none' stroke='{col}' stroke-width='2.2'{dash}/>")
+        for r, v in zip(rates, vals):
+            p.append(f"<circle cx='{X(r):.1f}' cy='{Y(v):.1f}' r='3' fill='white' stroke='{col}' stroke-width='1.8'/>")
+    # end values, stacked so that the close pairs (205/220, 941/946) do not overlap
+    ends = sorted(((vals[-1], name, col) for name, vals, col, _ in series), key=lambda t: t[0])
+    yy = None
+    for v, name, col in ends:
+        y = Y(v)
+        if yy is not None and yy - y < 13:
+            y = yy - 13
+        p.append(f"<text x='{X(64000)+8:.1f}' y='{y+4:.1f}' fill='{col}' {font(10, bold=True)}>{v} {esc(name.split()[1])}</text>")
+        yy = y
+    # notes
+    bx, by, bw = 724, 300, W - 24 - 724
+    p.append(f"<rect x='{bx}' y='{by}' width='{bw}' height='126' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
+    notes = [(INK, True, "Leitura"),
+             (SLATE, False, "Baixa taxa, LATEST: SPIM30 3× menor"),
+             (SLATE, False, "(só ela deixa PERI dormindo)."),
+             (SLATE, False, "> 16 k/s: barramento domina,"),
+             (SLATE, False, "SPIM30 ≈ SPIM22."),
+             (SLATE, False, "QUEUE: contador em PERI (121 µA)"),
+             (SLATE, False, "apaga a vantagem da SPIM30.")]
+    y = by + 20
+    for col, bold, s in notes:
+        p.append(f"<text x='{bx+12}' y='{y}' fill='{col}' {font(10.5, bold=bold)}>{esc(s)}</text>")
+        y += 16
+    p.append(legend_svg(ax, h - 44, [(OK, "SPIM30 (LP, P0)"), (BLUE, "SPIM22 (PERI, P1)"), (OFF, "SPIM00 (MCU, P2, 32 MHz)")]))
+    p.append(f"<text x='{ax}' y='{h-16}' fill='{SLATE}' {font(10)}>{esc('linha cheia = LATEST, tracejada = QUEUE (N = 64). Premissas: PERI ligado 20 µA (Academy), LP 5 µA (assumido), domínio MCU 300 µA (proxy TIMER00), SPIM ativa 0,25 / 0,8 mA, CPU 3,6 µs por amostra. Sem medição PPK2.')}</text>")
+    svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
+    with open(os.path.join(OUT, "consumo_vs_odr_spim_nrf54l15.svg"), "w", encoding="utf-8") as fh:
+        fh.write(svg)
+    print("wrote consumo_vs_odr_spim_nrf54l15.svg")
+
+
 if __name__ == "__main__":
     c1_m33_vs_flpr()
+    c2_spim_domains_vs_rate()
     b1_blocks_int()
     b2_blocks_timer()
     d1_sensor_int()

@@ -118,6 +118,8 @@ corrente de SPIM nem de domínio; o modelo usa o que existe:
 
 ### Consumo × taxa de amostras (mesmo modelo, rajada de 11 bytes, INT)
 
+![Consumo × ODR × instância](consumo_vs_odr_spim_nrf54l15.svg)
+
 Premissas por linha: base 2,9 µA; domínio mantido pelo GPIOTE IN: PERI
 20 µA (SPIM22 e SPIM00), LP 5 µA (SPIM30, valor assumido, não publicado);
 domínio MCU ligado pela SPIM00 300 µA; SPIM ativa 0,25 mA × 12,3 µs
