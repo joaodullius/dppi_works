@@ -117,7 +117,7 @@ publicado.
 
 Leituras: no nRF5340 o barramento a 8 MHz e o TIMER contador dominam; subir
 para 16 MHz na SPIM4 economiza ~0,6 mA e, mais importante, dobra a folga do
-wrap (3 → 9 µs). O modo LATEST poupa a CPU inteira (0,8 mA) mas entrega só
+margem do wrap (a transação inteira: 12 → 7 µs). O modo LATEST poupa a CPU inteira (0,8 mA) mas entrega só
 o último valor; para stream a 64 k/s o modo QUEUE com N = 64 é o mínimo
 razoável (N menor multiplica as IRQ). O ADXL382 em si (não incluído) consome
 na casa de 1 mA em alto desempenho — conferir no datasheet do sensor.

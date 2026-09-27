@@ -43,7 +43,7 @@ static nrfx_gpiote_t *const gpiote = &GPIOTE_NRFX_INST_BY_NODE(INT_GPIOTE_NODE);
 K_MSGQ_DEFINE(sample_q, SENSOR_BURST_LEN, CONFIG_APP_QUEUE_DEPTH, 1);
 static uint32_t dropped;
 static uint32_t late_wraps;
-static uint32_t blocks_done;
+static uint32_t cycles_done;   /* completed 2N-slot ring cycles */
 #else
 #define RING_SLOTS 1
 #endif
@@ -180,36 +180,53 @@ static inline uint32_t spim_rx_ptr_get(void)
 }
 
 /*
- * Counter ISR: zero-latency on Cortex-M (not delayed by irq_lock() sections),
- * so it only does what has a one-period deadline: wrapping the array list
- * when the second block completes. No kernel calls allowed here.
+ * The counter counts SPIM STARTED events (not END): slot k of a ring cycle
+ * is in flight when the count is k+1. The array-list pointer register is
+ * double-buffered and the hardware rewrites it (PTR += MAXCNT) at every
+ * START, so the only safe moment for the CPU to write it is right after a
+ * STARTED event, with the whole transaction (>= 11 us here) as margin. A
+ * write made around END, as an END-counted design does, can coincide with
+ * the next START and the hardware update: the pointer is then torn and the
+ * DMA writes elsewhere (bus/MPU fault seen at 15 us period on the nRF5340).
+ *
+ *   COMPARE1 = 2N   START of slot 2N-1  -> wrap: PTR = ring[0] (this ISR,
+ *                                          zero-latency), short CLEAR
+ *   COMPARE0 = N+1  START of slot N     -> block A complete -> EGU T0
+ *   COMPARE2 = 1    START of slot 0     -> block B complete -> EGU T1
+ *                                          (skipped on the very first cycle)
  */
 static void cnt_handler(nrf_timer_event_t event_type, void *p_context)
 {
 	ARG_UNUSED(p_context);
 
 	if (event_type == NRF_TIMER_EVENT_COMPARE1) {
-		/* PTR is double-buffered and this runs after END of slot 2N-1. If a
-		 * transaction already started meanwhile, the pointer has moved into
-		 * the slack area: count it (those samples are lost, not corrupted). */
+		/* Slot 2N-1 just started and the register already points at slot
+		 * 2N (slack). If it points further, the next START happened before
+		 * this ISR ran (one full transaction late): those samples went to
+		 * the slack area, not over memory. */
 		if (spim_rx_ptr_get() != (uint32_t)ring[2 * CONFIG_APP_BLOCK_SAMPLES]) {
 			late_wraps++;
 		}
 		nrf_spim_rx_buffer_set(spim.p_reg, ring[0], SENSOR_BURST_LEN);
-	}
-	if (event_type == NRF_TIMER_EVENT_COMPARE0 || event_type == NRF_TIMER_EVENT_COMPARE1) {
-		blocks_done++;
+		cycles_done++;
 	}
 }
 
 /*
- * EGU ISR (normal priority): COMPARE0/COMPARE1 reach the EGU through DPPI, so
+ * EGU ISR (normal priority): COMPARE0/COMPARE2 reach the EGU through DPPI, so
  * the queue work runs here without holding up the wrap above.
  */
 static void egu_handler(uint8_t event_idx, void *p_context)
 {
 	ARG_UNUSED(p_context);
+	static bool first_cycle = true;
 	const uint8_t *block = event_idx == 0 ? ring[0] : ring[CONFIG_APP_BLOCK_SAMPLES];
+
+	if (event_idx == 1 && first_cycle) {
+		/* COMPARE2 = 1 also fires at the very first transaction */
+		first_cycle = false;
+		return;
+	}
 
 	for (int i = 0; i < CONFIG_APP_BLOCK_SAMPLES; i++) {
 		const uint8_t *s = block + i * SENSOR_BURST_LEN;
@@ -255,10 +272,12 @@ static int counter_init(void)
 	if (err < 0) {
 		return err;
 	}
-	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL0, CONFIG_APP_BLOCK_SAMPLES,
-				    0, true);
+	/* Only COMPARE1 (wrap) interrupts; block-complete compares go to the EGU */
+	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL0, CONFIG_APP_BLOCK_SAMPLES + 1,
+				    0, false);
 	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL1, 2 * CONFIG_APP_BLOCK_SAMPLES,
 				    NRF_TIMER_SHORT_COMPARE1_CLEAR_MASK, true);
+	nrfx_timer_extended_compare(&timer_cnt, NRF_TIMER_CC_CHANNEL2, 1, 0, false);
 
 	/* Queue work: block-complete events reach the EGU through DPPI */
 	IRQ_CONNECT(DT_IRQN(EGU_NODE), DT_IRQ(EGU_NODE, priority), egu_irq_wrapper, &egu, 0);
@@ -282,11 +301,12 @@ static int counter_init(void)
 
 uint32_t spim_dppi_total_xfers(void)
 {
-	uint32_t in_block = nrfx_timer_capture(&timer_cnt, NRF_TIMER_CC_CHANNEL3);
+	/* Transactions started (the one in flight, if any, included) */
+	uint32_t in_cycle = nrfx_timer_capture(&timer_cnt, NRF_TIMER_CC_CHANNEL3);
 #if defined(CONFIG_APP_CONSUME_QUEUE)
-	return blocks_done * CONFIG_APP_BLOCK_SAMPLES + in_block % CONFIG_APP_BLOCK_SAMPLES;
+	return cycles_done * 2 * CONFIG_APP_BLOCK_SAMPLES + in_cycle;
 #else
-	return in_block;
+	return in_cycle;
 #endif
 }
 
@@ -403,19 +423,19 @@ int spim_dppi_start(void)
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_STARTED);
 	nrf_spim_event_clear(spim.p_reg, NRF_SPIM_EVENT_END);
 
-	/* trigger event -> SPIM START ; SPIM END -> counter COUNT */
+	/* trigger event -> SPIM START ; SPIM STARTED -> counter COUNT */
 	err = nrfx_gppi_conn_alloc(eep, nrfx_spim_start_task_address_get(&spim), &h_start);
 	if (err < 0) {
 		return err;
 	}
-	err = nrfx_gppi_conn_alloc(nrfx_spim_end_event_address_get(&spim),
+	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, NRF_SPIM_EVENT_STARTED),
 				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
 				   &h_count);
 	if (err < 0) {
 		return err;
 	}
 #if defined(CONFIG_APP_CONSUME_QUEUE)
-	/* counter COMPARE0/1 (block complete) -> EGU TRIGGER0/1 -> queue ISR */
+	/* counter COMPARE0/2 (block A/B complete) -> EGU TRIGGER0/1 -> queue ISR */
 	nrfx_gppi_handle_t h_blk0, h_blk1;
 
 	err = nrfx_gppi_conn_alloc(
@@ -425,7 +445,7 @@ int spim_dppi_start(void)
 		return err;
 	}
 	err = nrfx_gppi_conn_alloc(
-		nrfx_timer_compare_event_address_get(&timer_cnt, NRF_TIMER_CC_CHANNEL1),
+		nrfx_timer_compare_event_address_get(&timer_cnt, NRF_TIMER_CC_CHANNEL2),
 		nrfx_egu_task_address_get(&egu, NRF_EGU_TASK_TRIGGER1), &h_blk1);
 	if (err < 0) {
 		return err;
