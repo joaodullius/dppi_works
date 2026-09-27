@@ -26,12 +26,8 @@ LOG_MODULE_REGISTER(spim_dppi, LOG_LEVEL_INF);
 static nrfx_spim_t spim = NRFX_SPIM_INSTANCE(DT_REG_ADDR(BUS_NODE));
 PINCTRL_DT_DEFINE(BUS_NODE);
 
-#if HAVE_COUNTER
 static nrfx_timer_t timer_cnt = NRFX_TIMER_INSTANCE(DT_REG_ADDR(CNT_TIMER_NODE));
-#endif
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 static nrfx_egu_t egu = NRFX_EGU_INSTANCE(DT_REG_ADDR(EGU_NODE));
-#endif
 /* GPIOTE instance that serves the port of the sensor's data-ready pin */
 static nrfx_gpiote_t *const gpiote = &GPIOTE_NRFX_INST_BY_NODE(INT_GPIOTE_NODE);
 
@@ -44,18 +40,9 @@ static nrfx_gpiote_t *const gpiote = &GPIOTE_NRFX_INST_BY_NODE(INT_GPIOTE_NODE);
 #define CNT_EVENT_NAME "STARTED"
 #endif
 
-/* The hardware transaction counter is mandatory in QUEUE mode (it raises the
- * block interrupts and the wrap); in LATEST mode it only feeds the xfers
- * figure of the log and can be left out to save the TIMER. */
-#if defined(CONFIG_APP_CONSUME_QUEUE) || defined(CONFIG_APP_XFER_COUNTER)
-#define HAVE_COUNTER 1
-#else
-#define HAVE_COUNTER 0
-#endif
 
 /* ---- Buffers ------------------------------------------------------------ */
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 /* Ping-pong of 2N slots plus N slots of slack: if the wrap ISR (COMPARE1)
  * runs later than one trigger period, the array list keeps writing past the
  * second block instead of corrupting whatever follows the buffer. */
@@ -64,9 +51,6 @@ K_MSGQ_DEFINE(sample_q, SENSOR_BURST_LEN, CONFIG_APP_QUEUE_DEPTH, 1);
 static uint32_t dropped;
 static uint32_t late_wraps;
 static uint32_t cycles_done;   /* completed 2N-slot ring cycles */
-#else
-#define RING_SLOTS 1
-#endif
 
 /* EasyDMA target: RING_SLOTS consecutive bursts (array list increments PTR by MAXCNT) */
 static uint8_t ring[RING_SLOTS][SENSOR_BURST_LEN];
@@ -188,7 +172,6 @@ int spim_dppi_init(void)
 
 /* ---- Counter of SPIM END events (and block interrupts in QUEUE mode) --- */
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 /* Current EasyDMA RX pointer (array list mode advances it after each transfer) */
 static inline uint32_t spim_rx_ptr_get(void)
 {
@@ -278,9 +261,7 @@ ISR_DIRECT_DECLARE(cnt_direct_isr)
 	return 0;
 }
 #endif
-#endif
 
-#if HAVE_COUNTER
 static int counter_init(void)
 {
 	nrfx_timer_config_t cfg = NRFX_TIMER_DEFAULT_CONFIG(NRFX_MHZ_TO_HZ(1));
@@ -288,7 +269,6 @@ static int counter_init(void)
 
 	cfg.mode = NRF_TIMER_MODE_COUNTER;
 	cfg.bit_width = NRF_TIMER_BIT_WIDTH_32;
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 #if defined(CONFIG_ZERO_LATENCY_IRQS)
 	IRQ_DIRECT_CONNECT(DT_IRQN(CNT_TIMER_NODE), 0, cnt_direct_isr, IRQ_ZERO_LATENCY);
 #else
@@ -313,36 +293,18 @@ static int counter_init(void)
 		return err;
 	}
 	nrfx_egu_int_enable(&egu, NRF_EGU_INT_TRIGGERED0 | NRF_EGU_INT_TRIGGERED1);
-#else
-	IRQ_CONNECT(DT_IRQN(CNT_TIMER_NODE), DT_IRQ(CNT_TIMER_NODE, priority),
-		    timer_irq_wrapper, &timer_cnt, 0);
-	err = nrfx_timer_init(&timer_cnt, &cfg, timer_noop_handler);
-	if (err < 0) {
-		return err;
-	}
-#endif
 	nrfx_timer_clear(&timer_cnt);
 	nrfx_timer_enable(&timer_cnt);
 	return 0;
 }
-#endif /* HAVE_COUNTER */
 
 uint32_t spim_dppi_total_xfers(void)
 {
-#if HAVE_COUNTER
 	/* Transactions started (the one in flight, if any, included) */
 	uint32_t in_cycle = nrfx_timer_capture(&timer_cnt, NRF_TIMER_CC_CHANNEL3);
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 	return cycles_done * 2 * CONFIG_APP_BLOCK_SAMPLES + in_cycle;
-#else
-	return in_cycle;
-#endif
-#else
-	return 0;   /* no hardware counter in this build (APP_XFER_COUNTER=n) */
-#endif
 }
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 uint32_t spim_dppi_dropped(void)
 {
 	return dropped;
@@ -352,28 +314,7 @@ uint32_t spim_dppi_late_wraps(void)
 {
 	return late_wraps;
 }
-#endif
 
-#if defined(CONFIG_APP_CONSUME_LATEST)
-bool spim_dppi_latest(uint8_t out[SENSOR_BURST_LEN])
-{
-	/* A transaction may be rewriting the slot: take two copies bracketed by
-	 * the END counter and accept only when nothing completed in between and
-	 * both copies match. */
-	for (int attempt = 0; attempt < 4; attempt++) {
-		uint32_t before = spim_dppi_total_xfers();
-		uint8_t a[SENSOR_BURST_LEN], b[SENSOR_BURST_LEN];
-
-		memcpy(a, ring[0], SENSOR_BURST_LEN);
-		memcpy(b, ring[0], SENSOR_BURST_LEN);
-		if (spim_dppi_total_xfers() == before && memcmp(a, b, SENSOR_BURST_LEN) == 0) {
-			memcpy(out, a, SENSOR_BURST_LEN);
-			return true;
-		}
-	}
-	return false;
-}
-#endif
 
 /* ---- Trigger (GPIOTE IN event on the data-ready pin), DPPI, start ------ */
 
@@ -420,13 +361,11 @@ int spim_dppi_start(void)
 	uint32_t eep;
 	int err;
 
-#if HAVE_COUNTER
 	err = counter_init();
 	if (err) {
 		LOG_ERR("counter init: %d", err);
 		return err;
 	}
-#endif
 	err = trigger_init(&eep);
 	if (err) {
 		LOG_ERR("trigger init: %d", err);
@@ -442,9 +381,7 @@ int spim_dppi_start(void)
 	};
 	uint32_t flags = NRFX_SPIM_FLAG_HOLD_XFER | NRFX_SPIM_FLAG_REPEATED_XFER |
 			 NRFX_SPIM_FLAG_NO_XFER_EVT_HANDLER;
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 	flags |= NRFX_SPIM_FLAG_RX_POSTINC;   /* EasyDMA array list on RX */
-#endif
 	err = nrfx_spim_xfer(&spim, &xfer, flags);
 	if (err < 0) {
 		LOG_ERR("arming repeated transfer: %d", err);
@@ -462,15 +399,12 @@ int spim_dppi_start(void)
 	if (err < 0) {
 		return err;
 	}
-#if HAVE_COUNTER
 	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, CNT_EVENT),
 				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
 				   &h_count);
 	if (err < 0) {
 		return err;
 	}
-#endif
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 	/* counter COMPARE0/2 (block A/B complete) -> EGU TRIGGER0/1 -> queue ISR */
 	nrfx_gppi_handle_t h_blk0, h_blk1;
 
@@ -488,10 +422,7 @@ int spim_dppi_start(void)
 	}
 	nrfx_gppi_conn_enable(h_blk0);
 	nrfx_gppi_conn_enable(h_blk1);
-#endif
-#if HAVE_COUNTER
 	nrfx_gppi_conn_enable(h_count);
-#endif
 	nrfx_gppi_conn_enable(h_start);
 
 	/* Data-ready is a level: it is already high (nobody read the data since
@@ -499,7 +430,7 @@ int spim_dppi_start(void)
 	 * START reads and clears it; every next sample raises a fresh edge. */
 	nrf_spim_task_trigger(spim.p_reg, NRF_SPIM_TASK_START);
 	LOG_INF("DPPI connected, %s consumption, burst %u bytes, counting %s%s",
-		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? "queue (wrap ISR + EGU)" : "latest",
+		"queue (wrap ISR + EGU)",
 		SENSOR_BURST_LEN, CNT_EVENT_NAME,
 		IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) ? ", wrap ISR zero-latency" : "");
 	return 0;

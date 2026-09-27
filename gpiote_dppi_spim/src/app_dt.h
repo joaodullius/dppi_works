@@ -17,9 +17,7 @@
 #define CNT_TIMER_NODE  DT_CHOSEN(app_timer_count)
 #define EGU_NODE        DT_CHOSEN(app_egu)
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 BUILD_ASSERT(DT_NODE_EXISTS(EGU_NODE), "chosen app,egu is missing in the board overlay");
-#endif
 
 BUILD_ASSERT(DT_NODE_EXISTS(ACCEL_NODE), "chosen app,accel is missing in the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_PROP(BUS_NODE, cs_gpios), "the SPI bus needs cs-gpios (hardware CSN pin)");

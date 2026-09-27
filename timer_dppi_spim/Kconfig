@@ -48,31 +48,9 @@ config APP_SWEEP_STEP_S
 	int "Seconds per sweep step"
 	default 10
 
-choice APP_CONSUME
-	prompt "How the CPU consumes the samples"
-	default APP_CONSUME_LATEST
-
-config APP_CONSUME_LATEST
-	bool "Latest value only (single buffer, no interrupts)"
-	help
-	  EasyDMA rewrites the same buffer on every transaction. The CPU reads
-	  it periodically and sees the most recent sample; intermediate
-	  samples are overwritten. Cheapest option, for state not streams.
-
-config APP_CONSUME_QUEUE
-	bool "Every sample through a message queue (EasyDMA array list)"
-	help
-	  EasyDMA array list mode fills a ping-pong buffer of 2 x
-	  APP_BLOCK_SAMPLES slots; a hardware counter of SPIM END events raises
-	  one interrupt per block, whose ISR pushes the samples one by one into
-	  a k_msgq. The consumer thread pulls them one at a time, in order.
-
-endchoice
-
 config APP_BLOCK_SAMPLES
 	int "Samples per block (interrupt every N samples)"
-	depends on APP_CONSUME_QUEUE
-	default 16
+	default 64
 	range 1 512
 	help
 	  N = 1 gives one interrupt per sample (lowest latency, highest CPU
@@ -80,14 +58,12 @@ config APP_BLOCK_SAMPLES
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"
-	depends on APP_CONSUME_QUEUE
-	default 64
+	default 256
 	help
 	  Must hold at least two blocks plus the worst-case consumer delay.
 
 config APP_QUEUE_FRESH_ONLY
 	bool "Drop repeated samples in the block ISR (data-ready bit clear)"
-	depends on APP_CONSUME_QUEUE
 	default n
 	help
 	  Transactions faster than the sensor ODR re-read the previous sample.
@@ -117,7 +93,6 @@ config APP_SPI_RX_DELAY
 
 config APP_COUNT_STARTED
 	bool "Count SPIM STARTED instead of DMA.RX.READY on nRF54L (bench)"
-	depends on APP_CONSUME_QUEUE
 	default n
 	help
 	  On nRF54L the counter normally counts DMA.RX.READY, the event the
@@ -139,7 +114,6 @@ config APP_RRAM_STANDBY
 
 config APP_WRAP_LATENCY_STATS
 	bool "Measure the wrap ISR latency (bench)"
-	depends on APP_CONSUME_QUEUE
 	default n
 	help
 	  Runs the trigger TIMER at 16 MHz and, in the wrap ISR, captures the
@@ -156,16 +130,6 @@ config APP_REQUEST_HFXO
 	  Without it the TIMER (HFCLK) runs from the internal RC oscillator,
 	  measured ~0.2% slow against the LFXO based kernel clock. The FLPR has
 	  no clock control: there the hfxo_launcher image (launcher/) requests it.
-
-config APP_XFER_COUNTER
-	bool "LATEST mode: keep the hardware transaction counter (for the log)"
-	depends on APP_CONSUME_LATEST
-	default y
-	help
-	  In LATEST mode the TIMER in counter mode is only used to report the
-	  number of transactions (xfers) and to detect a torn copy. A product
-	  can drop it: n saves the TIMER (121 uA on nRF54L15, 475 uA on
-	  nRF5340) and xfers reads 0. In QUEUE mode the counter is mandatory.
 
 config APP_REPORT_PERIOD_MS
 	int "Report period in milliseconds"

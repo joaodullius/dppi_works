@@ -1,8 +1,8 @@
 /*
  * Hardware engine: SPIM with hardware CSN, repeated EasyDMA burst started
- * through DPPI by the GPIOTE IN event of the sensor's data-ready pin, SPIM END
- * counted by a TIMER in counter mode. Two consumption modes, see Kconfig
- * APP_CONSUME.
+ * through DPPI by the GPIOTE IN event of the sensor's data-ready pin, transaction starts
+ * counted by a TIMER in counter mode; every sample goes to a k_msgq in
+ * blocks of N.
  */
 #ifndef SPIM_DPPI_H_
 #define SPIM_DPPI_H_
@@ -21,18 +21,12 @@ int spim_dppi_start(void);
 /* Total SPIM transactions completed since start (hardware counter) */
 uint32_t spim_dppi_total_xfers(void);
 
-#if defined(CONFIG_APP_CONSUME_LATEST)
-/* Copy of the most recent burst; returns false if a coherent copy could not be taken */
-bool spim_dppi_latest(uint8_t out[SENSOR_BURST_LEN]);
-#endif
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 /* One SENSOR_BURST_LEN-byte raw burst per message, in order */
 extern struct k_msgq sample_q;
 /* Samples the ISR could not queue because the queue was full */
 uint32_t spim_dppi_dropped(void);
 /* Block wraps that ran later than one sample period (samples lost) */
 uint32_t spim_dppi_late_wraps(void);
-#endif
 
 #endif /* SPIM_DPPI_H_ */

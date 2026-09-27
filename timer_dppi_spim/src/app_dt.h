@@ -22,9 +22,7 @@
 BUILD_ASSERT(DT_NODE_EXISTS(ACCEL_NODE), "chosen app,accel is missing in the board overlay");
 BUILD_ASSERT(DT_NODE_EXISTS(TRIG_TIMER_NODE), "chosen app,timer-trigger is missing in the board overlay");
 BUILD_ASSERT(DT_NODE_HAS_PROP(BUS_NODE, cs_gpios), "the SPI bus needs cs-gpios (hardware CSN pin)");
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 BUILD_ASSERT(DT_NODE_EXISTS(EGU_NODE), "chosen app,egu is missing in the board overlay");
-#endif
 
 /* Absolute nRF pin number (port * 32 + pin) of a gpio phandle-array entry */
 #define NRF_PIN_ABS(node, prop) \

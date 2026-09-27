@@ -42,30 +42,6 @@ static void stats_reset(struct stats *s)
 	s->zsum = 0;
 }
 
-#if defined(CONFIG_APP_CONSUME_LATEST)
-static void report_latest(uint32_t elapsed_ms)
-{
-	uint8_t raw[SENSOR_BURST_LEN];
-	struct sensor_sample s;
-	bool ok = spim_dppi_latest(raw);
-
-	if (ok) {
-		sensor->decode(raw, &s);
-	}
-	LOG_INF("t=%u ms xfers=%u %s X=%.2f Y=%.2f Z=%.2f m/s^2 %s", elapsed_ms,
-		spim_dppi_total_xfers(), ok ? "latest" : "torn",
-		ok ? (double)to_ms2(s.x) : 0.0, ok ? (double)to_ms2(s.y) : 0.0,
-		ok ? (double)to_ms2(s.z) : 0.0, (ok && s.fresh) ? "(fresh)" : "");
-}
-
-/* Sleep for one report period, then print the latest sample */
-static void run_window(uint32_t *elapsed_ms)
-{
-	k_msleep(CONFIG_APP_REPORT_PERIOD_MS);
-	*elapsed_ms += CONFIG_APP_REPORT_PERIOD_MS;
-	report_latest(*elapsed_ms);
-}
-#else
 static struct stats win;
 
 /* Drain the queue for one report period, then print the window statistics */
@@ -95,9 +71,7 @@ static void run_window(uint32_t *elapsed_ms)
 		win.n ? (double)to_ms2(win.zmin) : 0.0, win.n ? (double)to_ms2(win.zmax) : 0.0);
 	stats_reset(&win);
 }
-#endif
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 /*
  * Sweep: run each period for APP_SWEEP_STEP_S seconds and print the totals
  * of the step (first second discarded as settling). Fresh per second vs the
@@ -158,17 +132,15 @@ static void run_sweep(const char *list)
 	}
 	LOG_INF("=== sweep done");
 }
-#endif
 
 int main(void)
 {
 	int err;
 	uint32_t elapsed_ms = 0;
 
-	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, consume=%s%s%s", sensor->name,
+	LOG_INF("timer_dppi_spim: %s, trigger=timer %u us, queue N=%s%s", sensor->name,
 		CONFIG_APP_SAMPLE_PERIOD_US,
-		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? "queue N=" : "latest",
-		IS_ENABLED(CONFIG_APP_CONSUME_QUEUE) ? STRINGIFY(CONFIG_APP_BLOCK_SAMPLES) : "",
+		STRINGIFY(CONFIG_APP_BLOCK_SAMPLES),
 		IS_ENABLED(CONFIG_APP_QUEUE_FRESH_ONLY) ? " fresh-only" : "");
 
 	err = spim_dppi_init();
@@ -184,14 +156,10 @@ int main(void)
 		return err;
 	}
 
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 	stats_reset(&win);
-#endif
-#if defined(CONFIG_APP_CONSUME_QUEUE)
 	if (CONFIG_APP_SWEEP_PERIODS_US[0] != '\0') {
 		run_sweep(CONFIG_APP_SWEEP_PERIODS_US);
 	}
-#endif
 	while (1) {
 		run_window(&elapsed_ms);
 	}

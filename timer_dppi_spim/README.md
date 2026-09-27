@@ -21,11 +21,11 @@ TIMER.COMPARE0 ──DPPI──▶ SPIM.TASKS_START ──▶ EasyDMA (rajada, C
 ```
 
 Um segundo TIMER, em modo contador, conta os inícios de transação (`STARTED`
-no nRF5340, `DMA.RX.READY` no nRF54L) e, no modo QUEUE, gera uma interrupção
-a cada N amostras. O consumo das amostras é escolhido por Kconfig (modo
-LATEST ou modo QUEUE), como no
+no nRF5340, `DMA.RX.READY` no nRF54L) e gera uma interrupção a cada N
+transações; a ISR de bloco põe as amostras numa `k_msgq`, como no
 [`gpiote_dppi_spim`](../gpiote_dppi_spim/README.md); o engine
-`src/spim_dppi.c` é uma cópia idêntica nos dois exemplos.
+`src/spim_dppi.c` é uma cópia idêntica nos dois exemplos. Com o filtro de
+repetidas (`APP_QUEUE_FRESH_ONLY`) só as amostras novas entram na fila.
 
 Use este exemplo quando o sensor não tem pino de data-ready ou quando a taxa
 de leitura deve ser fixa e independente do sensor. O custo é um TIMER de
@@ -59,15 +59,13 @@ Ferramentas:
 | `APP_SAMPLE_PERIOD_US` | 1000 | período do TIMER (10 µs a 1 s) |
 | `APP_SWEEP_PERIODS_US` | "" | lista de períodos para varrer (bancada); imprime `=== sweep result` por período |
 | `APP_SWEEP_STEP_S` | 10 | segundos por passo da varredura |
-| `APP_CONSUME_LATEST` / `APP_CONSUME_QUEUE` | LATEST | modo de consumo |
-| `APP_BLOCK_SAMPLES` | 16 | N amostras por interrupção (modo QUEUE) |
-| `APP_QUEUE_DEPTH` | 64 | profundidade da `k_msgq` em amostras |
+| `APP_BLOCK_SAMPLES` | 64 | N, transações por interrupção (1 para latência de uma amostra) |
+| `APP_QUEUE_DEPTH` | 256 | profundidade da `k_msgq` em amostras |
 | `APP_QUEUE_FRESH_ONLY` | n | filtro na ISR: só amostras com data-ready entram na fila; `skipped` conta as repetidas |
 | `APP_SPI_FREQ_HZ` | 4 MHz | clock da SPIM (8 MHz na TAG) |
 | `APP_SPI_CSN_DURATION` | 2 | `IFTIMING.CSNDUR` |
 | `APP_SPI_RX_DELAY` | −1 (driver) | `IFTIMING.RXDELAY` (1 na TAG) |
 | `APP_REQUEST_HFXO` | y (se há clock control) | TIMER com período exato |
-| `APP_XFER_COUNTER` | y | modo LATEST: mantém o TIMER contador só para relatar `xfers` no log; `n` remove o TIMER (121 µA no nRF54L15, 475 µA no nRF5340) e `xfers` lê 0. No modo QUEUE o contador é obrigatório |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório no log |
 | `APP_WRAP_LATENCY_STATS` | n | bancada: TIMER de disparo a 16 MHz e captura da latência trigger → ISR de wrap (min/avg/max) |
 | `APP_COUNT_STARTED` | n | bancada: no nRF54L conta `STARTED` em vez de `DMA.RX.READY` |
@@ -80,7 +78,7 @@ Ferramentas:
 | `app,accel` | nó do acelerômetro; o barramento é o pai do nó e `cs-gpios` dá o pino de CSN |
 | `app,timer-trigger` | TIMER que dispara as transações |
 | `app,timer-count` | TIMER usado como contador de inícios de transação (`STARTED` no nRF5340, `DMA.RX.READY` no nRF54L) |
-| `app,egu` | EGU que transforma os eventos de bloco em interrupção (modo QUEUE) |
+| `app,egu` | EGU que transforma os eventos de bloco em interrupção |
 
 Os overlays são os mesmos do `gpiote_dppi_spim`, mais o `app,timer-trigger`.
 
@@ -122,26 +120,16 @@ Sem isso o TIMER do FLPR roda do HFINT (10016/s em vez de 10000).
 
 ## Teste
 
-Modo LATEST (TAG, timer de 1 kHz, BMI270 a 400 Hz):
-
-```
-<inf> app: t=25000 ms xfers=25006 latest X=-0.74 Y=9.59 Z=-0.23 m/s^2
-<inf> app: t=26000 ms xfers=26007 latest X=-0.75 Y=9.58 Z=-0.23 m/s^2
-```
-
-`xfers` avança na taxa do timer. O sufixo `(fresh)` aparece só quando a
-última leitura trouxe uma amostra nova.
-
-Modo QUEUE (TAG, timer de 10 kHz, N = 16, sem filtro):
+Relatório por segundo (TAG, timer de 10 kHz, N = 16, sem filtro):
 
 ```
 <inf> app: t=25096 ms xfers=249968 queued=10000 fresh=402 dropped=0 Z avg=-0.23 min=-0.27 max=-0.19 m/s^2
 <inf> app: t=26097 ms xfers=259968 queued=10000 fresh=401 dropped=0 Z avg=-0.23 min=-0.29 max=-0.19 m/s^2
 ```
 
-`queued` segue o timer e `fresh` segue o ODR real do sensor. Com
-`APP_QUEUE_FRESH_ONLY=y` a fila recebe só as amostras novas e as repetidas
-aparecem em `skipped`.
+`xfers` avança na taxa do timer, `queued` segue o timer e `fresh` segue o
+ODR real do sensor. Com `APP_QUEUE_FRESH_ONLY=y` a fila recebe só as
+amostras novas e as repetidas aparecem em `skipped`.
 
 Varredura (TAG, `bench/sweep-tag.conf`):
 
@@ -168,11 +156,14 @@ Kconfig) e 8 MHz no bench de 64 k (`bench/bus-64k-thingy.conf`).
 
 ### Timer de 1 kHz e 10 kHz, sensor a 400 Hz
 
-| Alvo | TIMER 1 kHz, modo LATEST | TIMER 10 kHz, modo QUEUE |
+| Alvo | TIMER 1 kHz, transações/s | TIMER 10 kHz, N = 16 |
 |---|---|---|
 | Thingy:53 M33 (ADXL362) | 1000/s exato | 10000/s, fresh ≈ 380 |
 | TAG M33 (BMI270) | 1000/s exato | 10000/s, fresh 402 |
 | TAG FLPR (BMI270) | — | 10016/s do HFINT; **10001/s** com `hfxo_launcher` |
+
+A coluna de 1 kHz é só a contagem de transações (mesma aquisição, medida
+com uma versão anterior do exemplo que não tinha fila).
 
 ### Timer × ODR: taxa mínima sem perda
 
@@ -200,7 +191,7 @@ nominal, para cobrir a tolerância do oscilador do sensor.
 
 ### Teto do barramento
 
-Modo QUEUE, N = 64, fila 512, filtro na ISR. As transações/s são a contagem
+N = 64, fila 512, filtro na ISR. As transações/s são a contagem
 de inícios; acima do teto ela pode continuar subindo com dados congelados,
 então a validade é julgada pelo conteúdo (Z variando).
 
@@ -265,7 +256,7 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
   GPIOTE IN; `spim_dppi_set_period_us()` reprograma o período em tempo de
   execução;
 - o HFXO é pedido pelo `onoff` do `CLOCK_CONTROL_NRF` antes da configuração;
-- no modo QUEUE a ISR de EGU pode descartar as amostras repetidas
+- a ISR de bloco pode descartar as amostras repetidas
   (`APP_QUEUE_FRESH_ONLY`, bit de data-ready no `STATUS`);
 - `src/main.c` traz o `run_sweep()` da bancada.
 

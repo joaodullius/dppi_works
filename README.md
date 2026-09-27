@@ -1,10 +1,16 @@
 # dppi_works — aquisição SPI sem CPU com DPPI (nRF5340, nRF54L15)
 
 **Em uma frase:** um evento de hardware (o data-ready do sensor ou um TIMER)
-dispara a SPIM por DPPI, o EasyDMA grava a rajada em RAM e a CPU só entra
-para consumir os dados. Com sensor real, medido até 1 600 Hz por data-ready
-com zero perdas; os tetos de barramento, medidos com disparo por TIMER, são
-71,4 k transações/s no nRF5340 (11 B) e 52,6 k/s no nRF54L15 (17 B).
+dispara a SPIM por DPPI, o EasyDMA grava a rajada em RAM e a CPU só acorda
+uma vez a cada N amostras para passá-las a uma fila. Com sensor real,
+medido até 1 600 Hz por data-ready com zero perdas; os tetos de barramento,
+medidos com disparo por TIMER, são 71,4 k transações/s no nRF5340 (11 B) e
+52,6 k/s no nRF54L15 (17 B).
+
+Este caminho é para **taxa alta**. Para centenas de amostras por segundo um
+produto usa o subsistema de sensores do Zephyr ou leituras SPI diretas, e o
+DPPI não compensa a complexidade; a partir de alguns k amostras/s a CPU no
+caminho vira o limite, e é aí que este repositório entra.
 
 Os exemplos usam o DPPI (nRF53/54); o mesmo desenho vale com PPI no nRF52,
 não testado. nRF Connect SDK v3.4.1 (nrfx 4.0), chip select por hardware.
@@ -17,9 +23,9 @@ Marcação de todo número deste repositório: **M** = medido (log em
 relato (Nordic Academy, DevZone), não é especificação.
 
 Índice: [O problema e a ideia](#o-problema-e-a-ideia) ·
-[Glossário](#glossário-mínimo) · [Três decisões](#três-decisões) ·
+[Glossário](#glossário-mínimo) · [Duas decisões](#duas-decisões-e-onde-roda) ·
 [Caso 1](#caso-1--data-ready--gpiote--dppi--spim-recomendado) ·
-[Caso 2](#caso-2--timer--dppi--spim) · [Modo QUEUE por dentro](#modo-queue-por-dentro) ·
+[Caso 2](#caso-2--timer--dppi--spim) · [Anel, contador e wrap](#anel-contador-e-wrap) ·
 [Limites](#limites) · [Como escolher](#como-escolher) ·
 [Consumo](#consumo--resumo) · [Qual SPIM](#nrf54l15-qual-spim) ·
 [ADXL382](#caso-de-alta-taxa-adxl382-a-64-khz-não-testado-em-hardware) ·
@@ -29,16 +35,16 @@ relato (Nordic Academy, DevZone), não é especificação.
 
 **TL;DR: com a CPU no caminho, cada amostra custa uma interrupção e um
 `spi_transceive`; a 64 k/s isso é a CPU inteira. Com DPPI o caminho
-sensor → RAM não tem instrução nenhuma.**
+sensor → RAM não tem instrução nenhuma, e a CPU acorda uma vez por bloco.**
 
 Um driver de sensor convencional faz uma transação SPI por chamada: a CPU
 acorda, arma o buffer, espera o fim, copia. Isso limita a taxa, gasta
 energia e introduz jitter entre a amostra e a leitura. Nos SoCs Nordic os
 periféricos têm tarefas e eventos ligáveis pelo DPPI: o evento "amostra
 pronta" pode acionar a tarefa `START` da SPIM sem CPU, e o EasyDMA em modo
-*array list* pode escrever N transações seguidas em RAM antes de precisar
-de uma interrupção. Este repositório mostra isso funcionando, mede os
-limites e explica como escolher a configuração para um sensor concreto.
+*array list* escreve N transações seguidas em RAM antes de precisar de uma
+interrupção. Este repositório mostra isso funcionando, mede os limites e
+explica como escolher a configuração para um sensor concreto.
 
 ## Glossário mínimo
 
@@ -49,10 +55,7 @@ limites e explica como escolher a configuração para um sensor concreto.
 | rajada | os bytes de uma transação: comando + `STATUS` + dados (11 B no ADXL362, 17 B no BMI270) |
 | período | intervalo entre dois `START` consecutivos (1/ODR no caso 1, período do timer no caso 2) |
 | ODR | taxa de saída do sensor; "nominal" é a configurada, "real" é a medida (tolerância do oscilador do sensor) |
-| modo de entrega | como as amostras chegam à aplicação: LATEST ou QUEUE (Kconfig `APP_CONSUME_*`). "Consumo" neste repositório é sempre corrente |
-| LATEST | modo de entrega em que o EasyDMA reescreve um buffer só e a CPU lê o valor atual quando quiser, sem interrupção. Nunca entrega todas as amostras |
-| QUEUE | modo de entrega em que o EasyDMA percorre um anel, um contador gera uma interrupção a cada N transações e a ISR de bloco põe as amostras numa `k_msgq`, uma a uma |
-| N | `APP_BLOCK_SAMPLES`: transações por interrupção no modo QUEUE (= amostras no caso 1). IRQ/s = taxa de transações / N |
+| N | `APP_BLOCK_SAMPLES`: amostras por interrupção (transações por interrupção, iguais no caso 1). IRQ/s = taxa de transações / N. Os dois ajustes de produto são N = 1 (menor latência de entrega) e N = 64 (menor CPU e consumo) |
 | slot | espaço de uma rajada no anel |
 | anel | buffer de 3N slots: bloco A (slots 0..N−1), bloco B (N..2N−1) e a **folga do anel** (2N..3N−1). RAM = 3N × bytes da rajada |
 | array list | modo do EasyDMA em que `RXD.PTR` avança um slot por transação sem CPU (`RX_POSTINC` na nrfx) |
@@ -62,7 +65,7 @@ limites e explica como escolher a configuração para um sensor concreto.
 | `fresh` | bit de data-ready lido no `STATUS` da própria rajada. Heurístico: com leituras espaçadas menos de ~100 µs o sensor ainda não limpou o bit |
 | `queued`, `dropped`, `skipped` | amostras que passaram pela fila no período (postas pela ISR de bloco e lidas pelo consumidor, iguais quando `dropped = 0`); que não couberam na fila; descartadas como repetidas pelo filtro |
 | `STARTED` / `DMA.RX.READY` | evento de início de transação contado pelo contador: `STARTED` no nRF5340, `DMA.RX.READY` no nRF54L (a nrfx o chama `RXSTARTED`). É o instante em que o hardware liberou `RXD.PTR` para a próxima escrita |
-| contador | TIMER em modo contador ligado por DPPI ao evento acima; seus `COMPARE` geram as interrupções do modo QUEUE. No modo LATEST só relata a taxa (`xfers`) e pode sair (`APP_XFER_COUNTER=n`) |
+| contador | TIMER em modo contador ligado por DPPI ao evento acima; seus `COMPARE` geram a interrupção de bloco e a de wrap. `xfers` no log é a leitura dele |
 | ISR de bloco (EGU) | a ISR que põe um bloco de N amostras na fila; roda na EGU, periférico que transforma um evento DPPI em interrupção |
 | ZLI | zero-latency IRQ do Zephyr (`IRQ_DIRECT_CONNECT` + `CONFIG_ZERO_LATENCY_IRQS`), não bloqueada por `irq_lock()`; usada na ISR de wrap no M33 |
 | DPPI, EEP → TEP, GPPI | interconexão de periféricos: um evento (EEP) publica num canal e uma tarefa (TEP) assina o canal. GPPI é a camada da nrfx que aloca canais e, no nRF54L15, as pontes PPIB entre domínios |
@@ -77,33 +80,34 @@ limites e explica como escolher a configuração para um sensor concreto.
 
 Vocabulário fixo: "transação" para o evento SPI, "amostra" para o valor,
 "período" para o intervalo, "prazo do wrap" ou "margem" para tempo, "folga
-do anel" para os N slots extras, "modo de entrega" para LATEST/QUEUE e
-"consumo" para corrente. Taxas em transações/s; no caso 1 é igual a
-amostras/s. `xfers` e `STARTs` só aparecem dentro de blocos de log.
+do anel" para os N slots extras e "consumo" para corrente. Taxas em
+transações/s; no caso 1 é igual a amostras/s. `xfers` e `STARTs` só
+aparecem dentro de blocos de log.
 
-## Três decisões
+## Duas decisões (e onde roda)
 
-**TL;DR: quem dispara, como entrega, onde roda. A segunda decide o consumo.**
+**TL;DR: quem dispara e quantas amostras por interrupção. Toda amostra vai
+para a fila; N = 64 é o padrão de consumo, N = 1 o de latência.**
 
 1. **Quem dispara a transação.** O pino de data-ready do sensor (caso 1,
-   `gpiote_dppi_spim`, recomendado) ou um TIMER (caso 2, `timer_dppi_spim`).
-2. **Como as amostras chegam à aplicação (modo de entrega).** LATEST (um
-   buffer, a CPU lê o valor atual quando quiser, sem interrupção) ou QUEUE
-   (anel, uma interrupção a cada N transações, `k_msgq`). São entregas
-   diferentes: LATEST nunca entrega todas as amostras.
-3. **Onde roda.** SoC, instância da SPIM (no nRF54L15: SPIM00, SPIM2x ou
-   SPIM30) e core (Cortex-M33 ou FLPR). Pesa no consumo em taxa baixa
-   (SPIM00 custa +300 µA, E; SPIM30 poupa 15 µA em LATEST, E) e no prazo do
-   wrap acima de ~55 k transações/s (E, ver Limites).
+   `gpiote_dppi_spim`, recomendado: uma transação por amostra, sem TIMER de
+   disparo, sem HFXO, sem repetidas) ou um TIMER (caso 2, `timer_dppi_spim`:
+   polling do sensor em hardware, para sensor sem pino ou taxa fixa; é
+   também a bancada).
+2. **N, amostras por interrupção.** N = 64: uma ISR a cada 64 amostras, a
+   CPU dorme entre blocos, latência de entrega de 64 períodos. N = 1: uma
+   ISR por amostra, latência de um período, três a cinco vezes o consumo
+   acima de ~5 k/s (E). N = 16 é o intermediário medido.
+3. **Onde roda**, quando importa: SoC, instância da SPIM (no nRF54L15
+   SPIM2x, ou SPIM00 se o barramento não couber a 8 MHz) e core (Cortex-M33
+   ou FLPR). Pesa no prazo do wrap abaixo de 18 µs de período (E, ver
+   Limites) e no consumo da SPIM00 (+300 µA, E).
 
-As decisões não são de todo independentes: a SPIM30 só compensa em LATEST,
-e o prazo do wrap existe só em QUEUE.
-
-**Consumo em três linhas (nRF54L15, caso 1, E, tabela completa em
-[Consumo](#consumo--resumo)):** só o valor atual → LATEST, 9 a 28 µA até
-1 600/s; todas as amostras → QUEUE N = 16 ou 64, 150 a 170 µA até 1 600/s,
-dominados pelo contador de 121 µA, e 0,35 mA a 16 k/s; uma interrupção por
-amostra (N = 1) custa 0,5 a 1,1 mA a 16 k/s.
+**Consumo em três linhas (nRF54L15, caso 1, SPIM22, E; tabela em
+[Consumo](#consumo--resumo)):** N = 64 custa 165 µA a 1 600/s, 352 µA a
+16 k/s e 794 µA a 50 k/s; N = 1 custa 236 µA, 1,07 mA e 1,34 mA, metade
+disso é a RRAM acordando a cada amostra; N = 1 com RRAM em standby ou no
+FLPR cai para 182 µA, 527 µA e 1,34 mA.
 
 ## Estrutura do repositório
 
@@ -129,7 +133,7 @@ O pino INT do sensor vira um evento GPIOTE IN que, por DPPI, aciona
 ![Blocos do caso 1](docs/blocos_caso1_sensor_int.svg)
 
 *Quem liga em quem: o pino do sensor entra no GPIOTE, o DPPI leva o evento
-à SPIM; o contador e a EGU só são necessários no modo QUEUE.*
+à SPIM; o contador e a EGU geram a interrupção a cada N transações.*
 
 ![Timing do caso 1](docs/caso1_sensor_int.svg)
 
@@ -145,7 +149,7 @@ um glitch), a aquisição para de vez com o pino alto: em produto vale um
 watchdog que dispara um `START` por software quando o contador não avança
 (não implementado nos exemplos).
 
-Resultados no ODR máximo de cada sensor, modo QUEUE com N = 16 (M):
+Resultados no ODR máximo de cada sensor, N = 16 (M):
 
 | Alvo | Sensor | ODR | SCK | Transações/s | queued = fresh | dropped | late_wraps |
 |---|---|---|---|---|---|---|---|
@@ -155,8 +159,9 @@ Resultados no ODR máximo de cada sensor, modo QUEUE com N = 16 (M):
 
 ## Caso 2 — TIMER → DPPI → SPIM
 
-**TL;DR: para sensor sem pino de data-ready ou taxa fixa. Timer ≥ 1,05 ×
-ODR e filtro de repetidas; abaixo do ODR real perde amostras sem aviso (M).**
+**TL;DR: polling do sensor em hardware, para sensor sem pino de data-ready
+ou taxa fixa. Timer ≥ 1,05 × ODR e filtro de repetidas; abaixo do ODR real
+perde amostras sem aviso (M).**
 
 Um TIMER dispara a SPIM em período fixo. Ler os mesmos registradores em
 loop basta, porque eles sempre guardam a última amostra; o bit de data-ready
@@ -186,7 +191,7 @@ declarar, com 5 a 10 % como valor típico.
 *Dois relógios livres: abaixo do ODR real a perda é silenciosa; acima, as
 repetidas aparecem como `skipped`.*
 
-## Modo QUEUE por dentro
+## Anel, contador e wrap
 
 **TL;DR: anel de 3N slots preenchido pelo EasyDMA; um contador de inícios
 de transação gera uma IRQ por bloco de N e a ISR de wrap devolve o
@@ -218,13 +223,10 @@ ponteiro ao slot 0 com um período de prazo.**
 - **ISR de wrap e ISR de bloco são separadas.** O wrap é a única coisa com
   prazo e roda numa ZLI no M33 (no FLPR uma ISR direta basta). O trabalho da
   fila (N × `k_msgq_put`, filtro de repetidas) roda na ISR de bloco (EGU),
-  em prioridade normal.
-- **Modo LATEST** não tem nada disso: o EasyDMA reescreve um buffer só e a
-  CPU copia duas vezes e compara, para não ler uma rajada no meio da escrita
-  do EasyDMA. Os exemplos mantêm o contador ligado no LATEST apenas para
-  relatar a taxa no log (`APP_XFER_COUNTER=y`, default); `n` o remove.
+  em prioridade normal. O consumidor faz `k_msgq_get`, uma amostra por vez,
+  em ordem.
 
-![Modo QUEUE](docs/modo_queue_pingpong.svg)
+![Anel em ping-pong](docs/modo_queue_pingpong.svg)
 
 *N = 4 para caber no desenho: contador, os três `COMPARE`, a ISR de wrap e
 a ISR de bloco.*
@@ -276,8 +278,7 @@ o teto de 52,6 k/s (19 µs) passou com `late_wraps = 0` porque 19 µs > 16,8 µs
 caso que exige `APP_RRAM_STANDBY` (2,75 µs, M) ou o FLPR (2,43 µs
 constantes, M). No nRF5340 não há RRAM nem FLPR: a ZLI basta, medido a 14 µs
 de período com `late_wraps = 0` e o core dormindo entre blocos (M); a
-latência de wake-up do nRF5340 não foi medida. O modo LATEST não tem prazo
-nenhum.
+latência de wake-up do nRF5340 não foi medida.
 
 ### nRF54L15: Cortex-M33 × FLPR
 
@@ -306,16 +307,16 @@ são a média, claras o máximo.*
 Quando o FLPR compensa: latência determinística sem tocar a RRAM e liberar
 o M33 para a pilha de rádio. Custa o bloco VPR ligado (≈ +0,5 mA, R), 20 %
 menos fôlego com uma IRQ por amostra (40 contra 50 k/s, M) e o
-`hfxo_launcher` para timers exatos. A 400 ou 1 600 Hz os dois cores ficam
-ociosos e a escolha é de arquitetura.
+`hfxo_launcher` para timers exatos. A 1 600 Hz os dois cores ficam ociosos
+e a escolha é de arquitetura.
 
 ## Como escolher
 
-**TL;DR: um fluxo de cinco passos com as fórmulas; quatro exemplos
+**TL;DR: um fluxo de quatro passos com as fórmulas; três exemplos
 resolvidos abaixo, cada um com o consumo.**
 
 Entradas: ODR (Hz), B (bytes da rajada, com o comando), SCK máximo do
-sensor, "preciso de toda amostra?", latência de entrega aceitável, SoC.
+sensor, latência de entrega aceitável, SoC.
 
 ```
 1. Disparo
@@ -330,137 +331,103 @@ sensor, "preciso de toda amostra?", latência de entrega aceitável, SoC.
                    >  0,8 -> subir o SCK: nRF5340 SPIM4 a 16/32 MHz;
                              nRF54L15 só SPIM00 a 32 MHz (não testado; errata 8 se o
                              primeiro byte do comando tiver o bit mais significativo em 1)
-3. Entrega (modo)
-   Só o valor atual -> LATEST (fim; sem IRQ, sem prazo, sem contador).
-   Toda amostra     -> QUEUE. N = maior valor com N × t_per <= latência aceitável;
-                       IRQ/s = taxa de transações / N. Referência: N = 16 a 1 600 Hz -> 100 IRQ/s, 10 ms;
-                       N = 64 a 64 kHz -> 1 000 IRQ/s, 1 ms.
-4. Prazo do wrap (só QUEUE)
+3. N, amostras por interrupção
+   Latência de uma amostra é requisito -> N = 1 (uma IRQ por amostra)
+   Senão                               -> N = 64 (uma IRQ a cada 64; latência = 64 períodos)
+   IRQ/s = taxa de transações / N.  RAM = 3N × B (anel) + profundidade da fila × B.
+   Referência: N = 64 a 64 kHz -> 1 000 IRQ/s, 1 ms; N = 64 a 1 600 Hz -> 25 IRQ/s, 40 ms.
+4. Prazo do wrap e core
    t_per >= 18 µs -> qualquer core, configuração padrão.
    t_per <  18 µs -> nRF5340: ZLI basta (M, 14 µs).
                      nRF54L15: APP_RRAM_STANDBY=y ou FLPR (M).
-5. Instância no nRF54L15 (só se consumo importar; ver Consumo)
-   LATEST e taxa baixa -> SPIM30 + GPIOTE30 (P0)   [E, não testado]
-   Caso geral          -> SPIM2x + GPIOTE20 (P1)   [M]
-   SCK > 8 MHz         -> SPIM00 (P2)              [E, não testado]
+   N = 1 acima de ~2 k/s no nRF54L15: APP_RRAM_STANDBY=y ou FLPR, senão metade
+   do consumo é a RRAM acordando (E).
+   Instância no nRF54L15: SPIM2x (M); SPIM00 só se o passo 2 mandar subir o SCK (E, não testado).
 ```
 
 Exemplos resolvidos (consumo pela tabela de [Consumo](#consumo--resumo), E):
 
-- **BMI270, 1 600 Hz, 17 B, toda amostra, 10 ms de latência, nRF54L15.**
-  Caso 1. t_trans = 18,5 µs contra t_per = 625 µs: 3 %. QUEUE, N = 16
-  (100 IRQ/s, 10 ms). Período ≫ 18 µs: M33 padrão. SPIM22. Medido: 1 601 a
-  1 616/s, zero perdas (M). Consumo: linha "QUEUE N = 16, SPIM22" a 1 600/s,
-  169 µA, mais 0,25 mA × 1 600 × 6 µs = 2 µA pelos 17 B: ≈ 171 µA (E), dos
-  quais 121 são o contador.
-- **ADXL362, 400 Hz, 11 B, só o valor atual, nRF54L15.** Caso 1. t_trans =
-  12,5 µs contra 2,5 ms: 0,5 %. LATEST: sem IRQ, sem contador
-  (`APP_XFER_COUNTER=n`). SPIM30 se o pino puder ir ao P0, senão SPIM22.
-  Medido na Thingy (nRF5340, 4 MHz): ≈ 380/s (M). Consumo: linha "LATEST,
-  SPIM30" a 400/s, 9 µA; SPIM22, 24 µA (E).
-- **ADXL382, 64 kHz, 11 B, só o valor atual, nRF5340.** Caso 1. t_trans =
-  12,5 µs contra 15,6 µs: 80 %, no limite; SPIM4 a 16 MHz dá 45 %. LATEST
-  não tem prazo de wrap. Consumo: ≈ 0,9 mA a 16 MHz, ≈ 1,4 mA a 8 MHz, só o
-  SoC (E, tabela do nRF5340 em `docs/POWER.md`). Não testado em hardware.
-- **ADXL382, 64 kHz, 11 B, toda amostra, 1 ms, nRF54L15.** Caso 1. 80 % na
+- **BMI270, 1 600 Hz, 17 B, nRF54L15.** Caso 1. t_trans = 18,5 µs contra
+  t_per = 625 µs: 3 %. N = 64 (25 IRQ/s, 40 ms de latência). Período ≫
+  18 µs: M33 padrão. SPIM22. Medido com N = 16: 1 601 a 1 616/s, zero
+  perdas (M). Consumo: linha "N = 64, SPIM22" a 1 600/s, 165 µA, mais
+  0,25 mA × 1 600 × 6 µs = 2 µA pelos 17 B: ≈ 167 µA (E), dos quais 121 são o
+  contador.
+- **ADXL382, 64 kHz, 11 B, latência de 1 ms, nRF54L15.** Caso 1. 80 % na
   SPIM2x a 8 MHz (atende, sem margem); SPIM00 a 32 MHz, 27 % (margem, não
-  testado). QUEUE, N = 64 (1 000 IRQ/s). Período de 15,6 µs < 18 µs: RRAM em
+  testado). N = 64 (1 000 IRQ/s). Período de 15,6 µs < 18 µs: RRAM em
   standby ou FLPR. Consumo: ≈ 0,97 mA na SPIM22, ≈ 1,28 mA na SPIM00 (E,
   `docs/POWER.md`, seção ADXL382). Não testado em hardware.
+- **ADXL382, 64 kHz, 11 B, nRF5340.** Caso 1. t_trans = 12,5 µs contra
+  15,6 µs: 80 %, no limite; SPIM4 a 16 MHz dá 45 %. N = 64. Período < 18 µs:
+  ZLI basta (M, 14 µs com o ADXL362). Consumo: ≈ 2,2 mA a 16 MHz, ≈ 2,7 mA
+  a 8 MHz, só o SoC (E, tabela do nRF5340 em `docs/POWER.md`). Não testado
+  em hardware.
 
 ## Consumo — resumo
 
-**TL;DR: modelo, sem PPK2. O modo de entrega decide o consumo; a instância
-da SPIM soma um valor quase constante; N = 1 contra N = 16 ou 64 é a maior
-alavanca acima de ~5 k/s. Modelo completo e premissas em
-[`docs/POWER.md`](docs/POWER.md).**
+**TL;DR: modelo, sem PPK2. N = 1 contra N = 64 é a alavanca acima de
+~5 k/s, e metade do custo de N = 1 é a RRAM acordando; a SPIM00 soma
+~300 µA constantes; o contador de 121 µA faz parte do desenho. Modelo
+completo e premissas em [`docs/POWER.md`](docs/POWER.md).**
 
-![Consumo por modo de entrega, instância e taxa](docs/consumo_modos_nrf54l15.svg)
+![Consumo por N, instância e taxa](docs/consumo_modos_nrf54l15.svg)
 
-*Corrente média do SoC contra amostras/s para LATEST, QUEUE N = 64 e
-QUEUE N = 1, nas três instâncias de SPIM do nRF54L15 (E). A barra
-tracejada é N = 1 com RRAM em standby.*
+*Corrente média do SoC contra amostras/s para N = 64 e N = 1, SPIM22 e
+SPIM00 do nRF54L15 (E). A barra tracejada é N = 1 com RRAM em standby ou
+no FLPR.*
 
-Caso 1 (data-ready), rajada de 11 bytes, Cortex-M33 padrão (RRAM em
-power-down), LATEST com o contador removido (`APP_XFER_COUNTER=n`). SPIM30 e
-SPIM22 a 8 MHz (12,5 µs por transação), SPIM00 a 32 MHz (4,25 µs). Corrente
-média do SoC em µA (E). Premissas: base 2,9; domínio do GPIOTE PERI 20 (R)
-ou LP 5 (E); domínio MCU 300 (E) só na SPIM00; SPIM ativa 0,25 mA (2x/30) ou
-0,8 mA (00); contador 121 (+20 na SPIM30, que acorda PERI); CPU 2,6 mA ×
-3,8 µs (N = 64), 4,8 µs (N = 16) ou 21 µs (N = 1: 8 de trabalho + 13 de
-wake-up da RRAM) por amostra.
+Caso 1 (data-ready), rajada de 11 bytes, toda amostra na fila, Cortex-M33
+padrão (RRAM em power-down). SPIM22 a 8 MHz (12,5 µs por transação), SPIM00
+a 32 MHz (4,25 µs). Corrente média do SoC em µA (E). Premissas: base 2,9;
+domínio PERI mantido pelo GPIOTE 20 (R); domínio MCU 300 (E) só na SPIM00;
+SPIM ativa 0,25 mA (2x) ou 0,8 mA (00); contador 121; CPU 2,6 mA × 3,8 µs
+(N = 64), 4,8 µs (N = 16) ou 21 µs (N = 1: 8 de trabalho + 13 de wake-up da
+RRAM) por amostra.
 
-| Modo de entrega | Instância (SCK) | 400/s | 1 600/s | 16 k/s | 50 k/s |
-|---|---|---|---|---|---|
-| LATEST | SPIM30 (8 MHz) | **9** | **13** | **58** | **164** |
-| LATEST | SPIM22 (8 MHz) | 24 | 28 | 73 | 179 |
-| LATEST | SPIM00 (32 MHz) | 324 | 328 | 377 | 493 |
-| QUEUE N = 64 | SPIM30 | 154 | 170 | 357 | 799 |
-| QUEUE N = 64 | SPIM22 | **149** | **165** | **352** | **794** |
-| QUEUE N = 64 | SPIM00 | 449 | 465 | 656 | 1 108 |
-| QUEUE N = 16 | SPIM30 | 155 | 174 | 399 | 929 |
-| QUEUE N = 16 | SPIM22 | 150 | 169 | 394 | 924 |
-| QUEUE N = 16 | SPIM00 | 450 | 469 | 698 | 1 238 |
-| QUEUE N = 1, M33 padrão | SPIM30 | 172 | 241 | 1 073 | 1 345 |
-| QUEUE N = 1, M33 padrão | SPIM22 | 167 | 236 | 1 068 | 1 340 |
-| QUEUE N = 1, M33 padrão | SPIM00 | 467 | 536 | 1 372 | 1 654 |
-| QUEUE N = 1, RRAM em standby ou FLPR | SPIM22 | 153 | 182 | 527 | 1 340 |
+| N | Instância (SCK) | 1 600/s | 16 k/s | 50 k/s |
+|---|---|---|---|---|
+| N = 64 | SPIM22 (8 MHz) | **165** | **352** | **794** |
+| N = 64 | SPIM00 (32 MHz) | 465 | 656 | 1 108 |
+| N = 16 | SPIM22 | 169 | 394 | 924 |
+| N = 16 | SPIM00 | 469 | 698 | 1 238 |
+| N = 1, M33 padrão | SPIM22 | 236 | 1 068 | 1 340 |
+| N = 1, M33 padrão | SPIM00 | 536 | 1 372 | 1 654 |
+| N = 1, RRAM em standby ou FLPR | SPIM22 | 182 | 527 | 1 340 |
 
-Notas da tabela: como compilado com o default (contador ligado), LATEST
-custa +121 µA no nRF54L15 e +475 µA no nRF5340. Rajada de 17 bytes: somar
-0,25 mA × taxa × 6 µs. O modelo de N = 1 não é monotônico: o bench mostra o
-core deixando de dormir entre 25 e 40 k/s, e a partir daí sobram só os 8 µs
-de trabalho; a coluna de 50 k/s já usa 8 µs. No FLPR somar ≈ 0,5 mA do
-bloco VPR (R). PERI 20 µA (R) e LP 5 µA (E) são as premissas frágeis: são
-elas que decidem SPIM30 × SPIM22.
+Notas da tabela: rajada de 17 bytes: somar 0,25 mA × taxa × 6 µs. O modelo
+de N = 1 não é monotônico: o bench mostra o core deixando de dormir entre
+25 e 40 k/s, e a partir daí sobram só os 8 µs de trabalho; a coluna de
+50 k/s já usa 8 µs. No FLPR somar ≈ 0,5 mA do bloco VPR (R). PERI 20 µA (R)
+é a premissa de menor confiança, mas desloca todas as linhas por igual.
 
-Quatro leituras:
+Três leituras:
 
-1. **LATEST é outra entrega.** Só o valor atual. É a linha mais baixa em
-   todas as taxas porque não tem contador nem CPU, mas não serve se cada
-   amostra importa.
-2. **Entre as instâncias a diferença é quase constante.** SPIM30 economiza
-   15 µA sobre a SPIM22 só em LATEST; em QUEUE o contador acorda PERI e a
-   SPIM30 fica 5 µA pior. SPIM00 custa 280 a 300 µA a mais em qualquer
-   linha. Acima de ~5 k/s a instância deixa de ser a decisão principal;
-   abaixo disso a penalidade da SPIM00 ainda é o maior termo.
-3. **N = 1 contra N = 16 ou 64 é a maior alavanca acima de ~5 k/s.** A
-   16 k/s são 1,07 mA contra 0,35 mA; a 50 k/s, 1,34 contra 0,79. Cerca de
-   metade do custo de N = 1 até ~40 k/s é a RRAM acordando a cada amostra
-   (13 dos 21 µs de CPU por amostra, ≈ 50 % do total a 16 k/s); com RRAM em
-   standby N = 1 cai para 0,53 mA a 16 k/s, mas o custo de idle desse modo
-   não é publicado.
-4. **Abaixo de ~2 k/s quem manda é o contador**, 121 µA, igual em qualquer
-   N: QUEUE fica em 150 a 170 µA contra 9 a 28 µA do LATEST. Um QUEUE
-   drenado por tempo, sem TIMER (não implementado), daria ≈ LATEST + CPU por
-   amostra, 10 a 45 µA até 6,4 k/s: compensa até ~10 k/s e é decisivo abaixo
-   de 2 k/s.
+1. **N = 1 contra N = 64 é a alavanca acima de ~5 k/s.** A 16 k/s são
+   1,07 mA contra 0,35 mA; a 50 k/s, 1,34 contra 0,79. Cerca de metade do
+   custo de N = 1 até ~40 k/s é a RRAM acordando a cada amostra (13 dos
+   21 µs de CPU por amostra, ≈ 50 % do total a 16 k/s); com RRAM em standby
+   ou no FLPR N = 1 cai para 0,53 mA a 16 k/s. O custo de idle da RRAM em
+   standby não é publicado.
+2. **A SPIM00 custa ~300 µA a mais em qualquer taxa** (o domínio MCU
+   ligado, E). Só paga pela margem de barramento: SCK acima de 8 MHz,
+   rajada longa a 64 k/s, ou taxa acima de ~80 k/s (E). Nunca por consumo.
+3. **O contador TIMER (121 µA) faz parte do desenho** e não é alavanca
+   nestas taxas: a 16 k/s são 34 % do N = 64 e 11 % do N = 1; a 50 k/s,
+   15 % e 9 %.
 
-Regra que sai da tabela: valor atual → LATEST (SPIM30 se o pino puder ir ao
-P0, senão SPIM22); todas as amostras com latência de N períodos tolerável →
-N = 16 (default, medido) ou N = 64, na SPIM22; latência de uma amostra →
-N = 1 e, acima de ~2 k/s, só com RRAM em standby ou FLPR; SPIM00 só por
-barramento, nunca por consumo.
+Regra que sai da tabela: data-ready + N = 64 na SPIM22, salvo se a latência
+de uma amostra for requisito (então N = 1 com RRAM em standby ou FLPR) ou o
+barramento não couber a 8 MHz (então SPIM00).
 
-**QUEUE por tempo (não implementado).** Sem TIMER contador: a CPU acorda por
-GRTC a cada T ms, lê `RXD.PTR` para saber quantas amostras o EasyDMA
-escreveu, empurra o bloco e, antes de devolver o ponteiro ao slot 0, espera
-o flag `DMA.RX.READY` da transação em curso; o anel é dimensionado para
-mais de um T. É o desenho do notificador por `k_timer` da biblioteca PPI
-Sequencer do NCS posterior ao 3.4.1 (versão a confirmar). O limite de
-~10 k/s é um julgamento: abaixo dele os 121 µA do contador dominam; acima,
-o prazo do wrap pede o contador em hardware.
-
-nRF5340 (SPIM4, caso 1, 11 B, E, sem HFXO): a 400/s LATEST ≈ 58 µA e QUEUE
-≈ 538 µA, porque o contador custa 475 µA; a 64 k/s LATEST ≈ 1,4 mA a 8 MHz
-ou 0,9 mA a 16 MHz, QUEUE N = 64 ≈ 2,7 ou 2,2 mA, N = 1 ≈ 3,6 ou 3,1 mA.
-Tabela em `docs/POWER.md`.
+nRF5340 (SPIM4, caso 1, 11 B, E, sem HFXO): a 1 600/s N = 64 ≈ 0,58 mA,
+porque o contador custa 475 µA; a 64 k/s N = 64 ≈ 2,7 mA a 8 MHz ou 2,2 mA
+a 16 MHz, N = 1 ≈ 3,6 ou 3,1 mA. Tabela em `docs/POWER.md`.
 
 ## nRF54L15: qual SPIM
 
-**TL;DR: SPIM2x no caso geral (testada). SPIM30 para LATEST de baixa taxa e
-SPIM00 para SCK acima de 8 MHz, as duas só em teoria: a TAG não alcança
-nem uma nem outra.**
+**TL;DR: SPIM2x no caso geral (testada). SPIM00 só se o barramento não
+couber a 8 MHz, em teoria: a TAG não a alcança.**
 
 Fatos de hardware (D):
 
@@ -475,10 +442,6 @@ Consequências:
 - **SPIM2x (M).** Mesmo domínio do GPIOTE20, dos TIMER2x e da EGU20: caminho
   inteiro sem PPIB. É o que os exemplos usam. As três instâncias têm o
   mesmo clock e o mesmo custo.
-- **SPIM30 (E, não testado).** Mesmo domínio do GPIOTE30 (P0, 4 canais); no
-  modo LATEST é o único caminho que deixa PERI e MCU dormindo entre
-  transações. Não há TIMER no domínio LP, então o contador do modo QUEUE
-  fica em PERI e acorda o domínio a cada transação, pelo PPIB.
 - **SPIM00 (E, não testado).** 4× o barramento: 17 B em 4,25 µs. O disparo
   vem de PERI pelo PPIB01/PPIB21 (latência não especificada; wake-up se o
   domínio dormir). A errata 8 vale para todo o prescaler dela (mínimo 4),
@@ -488,6 +451,9 @@ Consequências:
   afetado; o `0x0B` do ADXL362 e o `0x23` do ADXL382 não. Faz sentido para
   rajada longa a 64 k/s, taxa acima do que 8 MHz alcança, sensor que exige
   SCK > 8 MHz, ou domínio MCU já ligado por outro motivo. Nunca por consumo.
+- **SPIM30 (LP, P0).** Só compensa quando o domínio PERI pode dormir entre
+  transações, o que não acontece neste uso: o contador e a EGU ficam em
+  PERI e acordam o domínio a cada transação pelo PPIB.
 
 **O que a TAG permite.** Só a SPIM22: o BMI270 está em P1.05/06/08, CSN
 P1.07, INT P1.04, e os pontos de teste expostos (P0.01, P0.02, P0.04,
@@ -521,7 +487,7 @@ Ocupação e prazo:
 |---|---|---|---|---|---|
 | nRF5340 SPIM4 | 8 MHz | 12,5 µs | 80 % | 15,6 µs | mesmo perfil medido a 71,4 k/s com o ADXL362 (M); sem margem para jitter ou `CSNDUR` maior |
 | nRF5340 SPIM4 | 16 MHz | 7,0 µs | 45 % | 15,6 µs | recomendado |
-| nRF54L15 SPIM2x / SPIM30 | 8 MHz | 12,5 µs | 80 % | 15,6 µs | atende, sem margem; não testado com 11 B |
+| nRF54L15 SPIM2x | 8 MHz | 12,5 µs | 80 % | 15,6 µs | atende, sem margem; não testado com 11 B |
 | nRF54L15 SPIM00 | 32 MHz | 4,25 µs | 27 % | 15,6 µs | margem; não testado. Errata 8 não se aplica ao ADXL382 (primeiro byte `0x23`, MSB 0) |
 
 O que trocar no `gpiote_dppi_spim`:
@@ -541,27 +507,26 @@ O que trocar no `gpiote_dppi_spim`:
    3.4.1: acrescentar `dts/bindings/adi,adxl382.yaml` no app.
 3. **`APP_SPI_FREQ_HZ = 16000000`** na SPIM4 do nRF5340; no nRF54L15 a
    SPIM2x atende a 8 MHz (80 %, sem margem) e só a SPIM00 passa de 8 MHz.
-4. **Modo QUEUE**: `APP_BLOCK_SAMPLES = 64` (1 000 IRQ/s), `APP_QUEUE_DEPTH
+4. **N e fila**: `APP_BLOCK_SAMPLES = 64` (1 000 IRQ/s), `APP_QUEUE_DEPTH
    ≥ 512` (a fila precisa de dois blocos mais o atraso do consumidor; 512 ×
    11 B = 5,6 KB). O prazo do wrap é um período, 15,6 µs, menor que os
    16,8 µs de wake-up do M33 do nRF54L15: lá, `APP_RRAM_STANDBY=y` ou FLPR.
    No nRF5340 basta `CONFIG_ZERO_LATENCY_IRQS=y`, medido a 14 µs (M).
-   `late_wraps` no log confirma. O modo LATEST não tem prazo.
+   `late_wraps` no log confirma.
 5. **Verificação**: transações/s no log = 64 000 ± tolerância do oscilador
    do sensor, `fresh = queued`, `late_wraps = 0`, Z variando (dados válidos).
 
 Consumo estimado a 64 k amostras/s, só o SoC (E, [`docs/POWER.md`](docs/POWER.md)):
 
-| SoC / instância | Modo LATEST | QUEUE N = 64 |
+| SoC / instância | N = 64 | N = 1 (core acordado) |
 |---|---|---|
-| nRF5340 SPIM4, 8 MHz | ≈ 1,4 mA | ≈ 2,7 mA |
-| nRF5340 SPIM4, 16 MHz | ≈ 0,9 mA | ≈ 2,2 mA |
-| nRF54L15 SPIM22, 8 MHz | ≈ 0,22 mA | ≈ 0,97 mA |
-| nRF54L15 SPIM30, 8 MHz | ≈ 0,21 mA | ≈ 0,98 mA |
-| nRF54L15 SPIM00, 32 MHz | ≈ 0,54 mA | ≈ 1,28 mA |
+| nRF5340 SPIM4, 8 MHz | ≈ 2,7 mA | ≈ 3,7 mA |
+| nRF5340 SPIM4, 16 MHz | ≈ 2,2 mA | ≈ 3,2 mA |
+| nRF54L15 SPIM22, 8 MHz | ≈ 0,97 mA | ≈ 1,7 mA |
+| nRF54L15 SPIM00, 32 MHz | ≈ 1,28 mA | ≈ 2,0 mA |
 
 No nRF5340 dominam a SPIM (1,7 mA enquanto transfere, D) e o contador
-(475 µA, D); no nRF54L15 a CPU do modo QUEUE (≈ 630 µA) e o barramento. O
+(475 µA, D); no nRF54L15 a CPU (≈ 630 µA com N = 64) e o barramento. O
 consumo do ADXL382 não está incluído.
 
 ## Achados
