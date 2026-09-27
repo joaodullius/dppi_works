@@ -31,7 +31,9 @@ LOG_MODULE_REGISTER(spim_dppi, LOG_LEVEL_INF);
 static nrfx_spim_t spim = NRFX_SPIM_INSTANCE(DT_REG_ADDR(BUS_NODE));
 PINCTRL_DT_DEFINE(BUS_NODE);
 
+#if HAVE_COUNTER
 static nrfx_timer_t timer_cnt = NRFX_TIMER_INSTANCE(DT_REG_ADDR(CNT_TIMER_NODE));
+#endif
 #if defined(CONFIG_APP_CONSUME_QUEUE)
 static nrfx_egu_t egu = NRFX_EGU_INSTANCE(DT_REG_ADDR(EGU_NODE));
 #endif
@@ -45,6 +47,15 @@ static nrfx_timer_t timer_trig = NRFX_TIMER_INSTANCE(DT_REG_ADDR(TRIG_TIMER_NODE
 #else
 #define CNT_EVENT      NRF_SPIM_EVENT_STARTED
 #define CNT_EVENT_NAME "STARTED"
+#endif
+
+/* The hardware transaction counter is mandatory in QUEUE mode (it raises the
+ * block interrupts and the wrap); in LATEST mode it only feeds the xfers
+ * figure of the log and can be left out to save the TIMER. */
+#if defined(CONFIG_APP_CONSUME_QUEUE) || defined(CONFIG_APP_XFER_COUNTER)
+#define HAVE_COUNTER 1
+#else
+#define HAVE_COUNTER 0
 #endif
 
 /* ---- Buffers ------------------------------------------------------------ */
@@ -347,6 +358,7 @@ ISR_DIRECT_DECLARE(cnt_direct_isr)
 #endif
 #endif
 
+#if HAVE_COUNTER
 static int counter_init(void)
 {
 	nrfx_timer_config_t cfg = NRFX_TIMER_DEFAULT_CONFIG(NRFX_MHZ_TO_HZ(1));
@@ -391,15 +403,20 @@ static int counter_init(void)
 	nrfx_timer_enable(&timer_cnt);
 	return 0;
 }
+#endif /* HAVE_COUNTER */
 
 uint32_t spim_dppi_total_xfers(void)
 {
+#if HAVE_COUNTER
 	/* Transactions started (the one in flight, if any, included) */
 	uint32_t in_cycle = nrfx_timer_capture(&timer_cnt, NRF_TIMER_CC_CHANNEL3);
 #if defined(CONFIG_APP_CONSUME_QUEUE)
 	return cycles_done * 2 * CONFIG_APP_BLOCK_SAMPLES + in_cycle;
 #else
 	return in_cycle;
+#endif
+#else
+	return 0;   /* no hardware counter in this build (APP_XFER_COUNTER=n) */
 #endif
 }
 
@@ -475,15 +492,17 @@ static int trigger_init(uint32_t *eep)
 
 int spim_dppi_start(void)
 {
-	nrfx_gppi_handle_t h_start, h_count;
+	nrfx_gppi_handle_t h_start, h_count __unused;
 	uint32_t eep;
 	int err;
 
+#if HAVE_COUNTER
 	err = counter_init();
 	if (err) {
 		LOG_ERR("counter init: %d", err);
 		return err;
 	}
+#endif
 	err = trigger_init(&eep);
 	if (err) {
 		LOG_ERR("trigger init: %d", err);
@@ -519,12 +538,14 @@ int spim_dppi_start(void)
 	if (err < 0) {
 		return err;
 	}
+#if HAVE_COUNTER
 	err = nrfx_gppi_conn_alloc(nrf_spim_event_address_get(spim.p_reg, CNT_EVENT),
 				   nrf_timer_task_address_get(timer_cnt.p_reg, NRF_TIMER_TASK_COUNT),
 				   &h_count);
 	if (err < 0) {
 		return err;
 	}
+#endif
 #if defined(CONFIG_APP_CONSUME_QUEUE)
 	/* counter COMPARE0/2 (block A/B complete) -> EGU TRIGGER0/1 -> queue ISR */
 	nrfx_gppi_handle_t h_blk0, h_blk1;
@@ -544,7 +565,9 @@ int spim_dppi_start(void)
 	nrfx_gppi_conn_enable(h_blk0);
 	nrfx_gppi_conn_enable(h_blk1);
 #endif
+#if HAVE_COUNTER
 	nrfx_gppi_conn_enable(h_count);
+#endif
 	nrfx_gppi_conn_enable(h_start);
 
 	nrfx_timer_clear(&timer_trig);

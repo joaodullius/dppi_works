@@ -67,6 +67,7 @@ Ferramentas:
 | `APP_SPI_CSN_DURATION` | 2 | `IFTIMING.CSNDUR` |
 | `APP_SPI_RX_DELAY` | −1 (driver) | `IFTIMING.RXDELAY` (1 na TAG) |
 | `APP_REQUEST_HFXO` | y (se há clock control) | TIMER com período exato |
+| `APP_XFER_COUNTER` | y | modo LATEST: mantém o TIMER contador só para relatar `xfers` no log; `n` remove o TIMER (121 µA no nRF54L15, 475 µA no nRF5340) e `xfers` lê 0. No modo QUEUE o contador é obrigatório |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório no log |
 | `APP_WRAP_LATENCY_STATS` | n | bancada: TIMER de disparo a 16 MHz e captura da latência trigger → ISR de wrap (min/avg/max) |
 | `APP_COUNT_STARTED` | n | bancada: no nRF54L conta `STARTED` em vez de `DMA.RX.READY` |
@@ -155,9 +156,9 @@ Varredura (TAG, `bench/sweep-tag.conf`):
 Cada passo descarta o primeiro segundo e imprime os totais dos seguintes.
 `xfers` conta inícios de transação (no relatório por segundo aparece como
 `late` o mesmo contador `late_wraps`). `late_wraps` diferente de zero indica
-que o wrap do anel rodou depois do `START` seguinte: essa transação foi para
-a folga do anel e o bloco sai deslocado um slot (uma amostra velha no lugar
-da nova), sem corromper memória.
+que o wrap do anel rodou depois do `START` seguinte: a transação que já
+tinha começado foi para a folga do anel e não entra na fila (uma amostra
+perdida, ordem preservada, não se acumula), sem corromper memória.
 
 ## Resultados
 
@@ -188,7 +189,12 @@ coluna "amostras novas/s" é o `fresh/s`, que com o filtro é igual ao
 | 2200 µs (454/s) | 454 | 402,4 | não |
 
 Abaixo do ODR real o timer perde amostras em silêncio: o data-ready volta a
-subir antes da próxima leitura. O medido é 1,5 % acima do ODR real (2 % do
+subir antes da próxima leitura. Os 401,4 e 401,5 das linhas de 2475 e
+2400 µs não são perda: a taxa real do sensor oscila ±1/s entre janelas de
+1 s. O critério de perda é outro: `skipped = 0` com amostras novas/s
+abaixo do ODR real significa que o timer nunca leu uma repetida, logo
+perdeu amostras; a partir de 2450 µs aparecem repetidas (`skipped > 0`),
+prova de que o timer está à frente do sensor. O medido é 1,5 % acima do ODR real (2 % do
 nominal) numa unidade; a regra de projeto é timer 5 a 10 % acima do ODR
 nominal, para cobrir a tolerância do oscilador do sensor.
 
@@ -269,8 +275,10 @@ O engine (`src/spim_dppi.c`) e os backends de sensor são os mesmos do
    FLPR não tem clock control no NCS 3.4.1, por isso o `hfxo_launcher`.
 2. **Latência de 17 µs do M33 em idle = wake-up da RRAM.** Com o core em
    idle a RRAM entra em power-down (padrão do `RRAMC`) e a primeira
-   instrução da ISR espera `tIDLE2CPU` = 13 µs (D); medido 16,8 µs até a ISR
-   de wrap contra 2 µs com o core acordado. Constant latency sozinho não
+   instrução da ISR espera `tIDLE2CPU` = 13 µs (D). Medido: 16,8 µs até a
+   ISR de wrap (M) = 13 µs de RRAM (D) + ~4 µs de DPPI, IRQ e entrada da
+   ISR (M); com o core acordado, 1,7–2,6 µs. Limiar prático: período menor
+   que 18 µs. Constant latency sozinho não
    resolve; RRAM em standby (`APP_RRAM_STANDBY`) dá 2,75 µs constantes. O
    FLPR roda da RAM: 2,43 µs sem configurar nada. Só importa para prazos de
    ISR abaixo de ~18 µs com o core dormindo entre eventos; nas taxas

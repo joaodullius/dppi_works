@@ -65,6 +65,7 @@ Ferramentas:
 | `APP_SPI_FREQ_HZ` | 4 MHz | clock da SPIM (8 MHz na TAG, ver Achados) |
 | `APP_SPI_CSN_DURATION` | 2 | `IFTIMING.CSNDUR` |
 | `APP_SPI_RX_DELAY` | −1 (driver) | `IFTIMING.RXDELAY` (1 na TAG, ver Achados) |
+| `APP_XFER_COUNTER` | y | modo LATEST: mantém o TIMER contador só para relatar `xfers` no log; `n` remove o TIMER (121 µA no nRF54L15, 475 µA no nRF5340) e `xfers` lê 0. No modo QUEUE o contador é obrigatório |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório no log |
 
 ### Devicetree
@@ -131,13 +132,15 @@ Modo QUEUE (TAG, BMI270 a 1600 Hz, N = 16):
 <inf> app: t=26000 ms xfers=41848 queued=1601 fresh=1601 dropped=0 late=0 Z avg=-0.18 min=-0.28 max=-0.06 m/s^2
 ```
 
-`queued` é o número de amostras retiradas da fila no período. Um teste bem
-sucedido tem `queued = fresh`, `dropped = 0` e `late = 0`. `dropped` conta
+`queued` é o número de amostras que passaram pela fila no período: postas
+pela ISR de bloco (EGU) e retiradas pelo consumidor, iguais quando
+`dropped = 0`. Um teste bem sucedido tem `queued = fresh`, `dropped = 0` e
+`late = 0`. `dropped` conta
 amostras que não couberam na fila. `late` é o contador `late_wraps`: wraps
-do anel feitos depois de o `START` seguinte já ter ocorrido; essa transação
-foi para a folga do anel e o bloco entregue sai deslocado um slot (uma
-amostra velha no lugar da nova). Não corrompe memória, e o contador é a
-forma de detectar.
+do anel feitos depois de o `START` seguinte já ter ocorrido; a transação
+que já tinha começado foi para a folga do anel e não entra na fila (uma
+amostra perdida, ordem preservada, não se acumula de um ciclo para o
+outro). Não corrompe memória, e o contador é a forma de detectar.
 
 ## Resultados
 
@@ -200,7 +203,9 @@ sensor da bancada gera data-ready além de 1600 Hz: 52,6 k/s na TAG com
 2. **nRF54L15, errata 8 da SPIM**: com CPHA = 0, `PRESCALER > 2` e primeiro
    bit em 1 (o `0x83` do BMI270), o MOSI sai errado. O workaround da nrfx
    exige uma escrita por transação, impossível com disparo por DPPI. A saída
-   é 8 MHz (`PRESCALER = 2`).
+   é 8 MHz (`PRESCALER = 2`). A errata só atinge sensores cujo primeiro byte
+   tem o bit mais significativo em 1: o `0x0B` do ADXL362 e o `0x23` do
+   ADXL382 não são afetados, e para eles a SPIM00 a 32 MHz fica livre.
 3. **`IFTIMING.RXDELAY` no nRF54L é em ciclos de 16 MHz**, não em 1/64 MHz
    como no nRF5340. O valor de reset (2) equivale a um bit inteiro a 8 MHz
    e amostra o bit seguinte. `APP_SPI_RX_DELAY=1` corrige.

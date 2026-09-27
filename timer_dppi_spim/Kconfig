@@ -157,6 +157,16 @@ config APP_REQUEST_HFXO
 	  measured ~0.2% slow against the LFXO based kernel clock. The FLPR has
 	  no clock control: there the hfxo_launcher image (launcher/) requests it.
 
+config APP_XFER_COUNTER
+	bool "LATEST mode: keep the hardware transaction counter (for the log)"
+	depends on APP_CONSUME_LATEST
+	default y
+	help
+	  In LATEST mode the TIMER in counter mode is only used to report the
+	  number of transactions (xfers) and to detect a torn copy. A product
+	  can drop it: n saves the TIMER (121 uA on nRF54L15, 475 uA on
+	  nRF5340) and xfers reads 0. In QUEUE mode the counter is mandatory.
+
 config APP_REPORT_PERIOD_MS
 	int "Report period in milliseconds"
 	default 1000
