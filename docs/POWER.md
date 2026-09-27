@@ -85,6 +85,55 @@ Leituras:
   o domínio MCU ativo e PPIB para o disparo. Nenhuma corrente de SPIM é
   publicada para o nRF54L15.
 
+## nRF54L15: SPIM00 × SPIM22 × SPIM30 a 64 k amostras/s
+
+Caso 1 (data-ready), rajada de 11 bytes, período 15,6 µs, modo QUEUE com
+N = 64 no M33 com RRAM em standby. O datasheet do nRF54L15 não publica
+corrente de SPIM nem de domínio; o modelo usa o que existe:
+
+- TIMER como proxy do custo de domínio: `ITIMER0` TIMER00 (MCU, 128 MHz)
+  450 µA contra `ITIMER1` TIMER20 (PERI, 16 MHz) 142 µA. A Academy mede
+  que o TIMER00 a 1 MHz já custa quase o mesmo que a 128 MHz: o custo é
+  do domínio MCU ligado (≈ +0,3 mA), não da frequência.
+- SPIM2x/30 ativa ≈ 0,25 mA (estimativa já usada); SPIM00 ativa ≈ 0,8 mA
+  pela mesma razão TIMER00/TIMER20, com transação 4× mais curta.
+- Domínio mantido ligado pelo GPIOTE IN: PERI ≈ +17–20 µA (Academy, DK);
+  LP: menor, não publicado (assumido ≤ 20 µA).
+- CPU igual nos três: ISR de bloco + wrap + consumidor ≈ 23 % de 2,6 mA =
+  0,60 mA. Contador TIMER21 (PERI, 1 MHz) 121 µA nos três.
+
+| Termo | SPIM22 (PERI, 8 MHz) | SPIM30 (LP, 8 MHz) | SPIM00 (MCU, 32 MHz) |
+|---|---|---|---|
+| Transação / ocupação | 12,3 µs / 80 % | 12,3 µs / 80 % | 3,4 µs / 22 % |
+| Base + domínio do GPIOTE | 2,9 + 20 µA | 2,9 + ≤ 20 µA | 2,9 + 20 µA (GPIOTE20) |
+| Domínio MCU ligado pela SPIM00 | — | — | ≈ 300 µA¹ |
+| SPIM × ocupação | 0,25 × 80 % = 200 µA | 200 µA | 0,8 × 22 % ≈ 180 µA |
+| Contador TIMER21 (PERI) | 121 µA | 121 µA (acorda PERI a cada transação) | 121 µA |
+| CPU (QUEUE, N = 64) | 600 µA | 600 µA | 600 µA |
+| **Total QUEUE** | **≈ 0,95 mA** | **≈ 0,95 mA** | **≈ 1,2 mA** |
+| **Total LATEST** (sem contador, sem CPU) | ≈ 0,22 mA | ≈ 0,22 mA (só LP ligado) | ≈ 0,50 mA |
+
+¹ Limite superior, pelo TIMER00; a medir com PPK2.
+
+Leituras:
+
+- **Todos atendem 64 k/s com 11 bytes**, mas SPIM22 e SPIM30 sem margem
+  (80 % do barramento, 3 µs de folga até o próximo START); com 17 bytes só
+  a SPIM00 (52,6 k/s é o teto das outras). A SPIM00 é a única que permite
+  rajadas maiores ou CSNDUR maior a 64 k.
+- **Consumo:** a 64 k/s o barramento e a CPU dominam e a SPIM00 custa
+  ~25 % a mais pelo domínio MCU ligado; a energia por transação das três é
+  parecida (a SPIM00 é ~3× mais corrente por ~4× menos tempo). A vantagem
+  da SPIM30 aparece em taxas baixas e no modo LATEST: é o único caminho
+  com PERI e MCU dormindo entre transações (a 400/s: ≈ 5 µA contra ≈ 25 µA
+  da SPIM22 e ≈ 0,3 mA da SPIM00).
+- **CPU:** não há diferença por instância. O trabalho por amostra é o
+  mesmo (uma ISR de wrap a cada 2N, uma ISR de EGU por bloco, um `put` e
+  um `get` por amostra). O que muda é a folga no barramento, não o tempo de
+  CPU. Um cuidado vale para as três: a 15,6 µs de período o wrap tem menos
+  que os 17 µs de wake-up do M33 em idle, então em QUEUE o M33 precisa da
+  RRAM em standby ou do FLPR, qualquer que seja a SPIM.
+
 ## nRF5340 (Thingy:53, ADXL362, 11 B a 8 MHz)
 
 | Caso | 380–400/s | 71 k/s (teto) |

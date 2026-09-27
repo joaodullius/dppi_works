@@ -185,12 +185,18 @@ domínios pelo PPIB sozinha (`helpers/nrfx_gppi_routes.h`).
 
 | Instância | SCK | Transação | Ocupação | Folga para o wrap | Canais DPPI | Observações |
 |---|---|---|---|---|---|---|
-| SPIM22 (PERI) | 8 MHz | ≈ 12,3 µs | 80 % | ≈ 12 µs (a transação) | 4 de 16 no DPPIC20 | Medido no nRF5340 com o mesmo perfil: 71,4 k/s válidos. Sem PPIB. |
-| SPIM00 (MCU) | 32 MHz | ≈ 3,4 µs (2,75 + START) | 22 % | ≈ 3 µs (a transação), mas o intervalo até o próximo `START` é de 12 µs | 2 no DPPIC00 (START, RX.READY) + PPIB01/21 + 2 no DPPIC20 | Errata 8 sempre ativa: CPHA = 1 ou primeiro bit 0. O domínio MCU fica acordado pela SPIM; o disparo em PERI cruza o PPIB (latência extra, não especificada). Com o core dormindo entre blocos, a RRAM em standby ou o FLPR são obrigatórios (17 µs > 15,6 µs). |
-| SPIM30 (LP) | 8 MHz | ≈ 12,3 µs | 80 % | ≈ 12 µs | 2 de 4 no DPPIC30 + PPIB30/22 + 2 no DPPIC20 | Sensor no P0 com GPIOTE30 (4 canais). O contador e a EGU ficam em PERI, então PERI acorda a cada transação; só o modo LATEST sem contador deixa PERI dormir. |
+| SPIM22 (PERI) | 8 MHz | ≈ 12,3 µs | 80 % | 15,6 µs (um período) | 4 de 16 no DPPIC20 | Medido no nRF5340 com o mesmo perfil: 71,4 k/s válidos. Sem PPIB. |
+| SPIM00 (MCU) | 32 MHz | ≈ 3,4 µs (2,75 + START) | 22 % | 15,6 µs | 2 no DPPIC00 (START, RX.READY) + PPIB01/21 + 2 no DPPIC20 | Errata 8 sempre ativa: CPHA = 1 ou primeiro bit 0. O domínio MCU fica acordado pela SPIM; o disparo em PERI cruza o PPIB (latência extra, não especificada). Única que aceita rajadas maiores ou `CSNDUR` maior a 64 k. |
+| SPIM30 (LP) | 8 MHz | ≈ 12,3 µs | 80 % | 15,6 µs | 2 de 4 no DPPIC30 + PPIB30/22 + 2 no DPPIC20 | Sensor no P0 com GPIOTE30 (4 canais). O contador e a EGU ficam em PERI, então PERI acorda a cada transação; só o modo LATEST sem contador deixa PERI dormir. |
 
-A 400 ou 1600 Hz as três instâncias funcionam igual; a diferença é
-consumo (LP × PERI × MCU acordados) e não desempenho.
+As três atendem 64 k/s com 11 bytes; SPIM22 e SPIM30 sem margem, SPIM00
+com 4×. A folga do wrap é um período nos três casos (após o `RX.READY` o
+ponteiro pode ser escrito até o próximo `START`), então a 15,6 µs o M33
+precisa da RRAM em standby ou do FLPR em modo QUEUE, qualquer que seja a
+SPIM. O uso de CPU por amostra é igual nas três. A 400 ou 1600 Hz as três
+funcionam igual; a diferença é consumo (LP × PERI × MCU acordados) e não
+desempenho. Estimativa de consumo das três a 64 k/s em
+[docs/POWER.md](docs/POWER.md#nrf54l15-spim00--spim22--spim30-a-64-k-amostrass).
 
 **Desempenho.** Só a SPIM00 muda o teto: com 8 MHz o limite é 52,6 k/s
 para 17 B e ~80 k/s para 11 B; a 32 MHz caberiam 4× mais transações por
