@@ -195,7 +195,7 @@ até 10 %.
 | Alvo | Último período válido | Transações/s | Acima do teto | Fonte |
 |---|---|---|---|---|
 | TAG M33, SPIM22, 17 B | 19 µs | **52,6 k** | ponteiro segue (55,6–62,5 k/s), `fresh` sai do ODR (363 / 454 / 453 contra 402), Z estreita (0,58–0,62 contra 0,54–0,65): 18–16 µs não comprovados | M, `u_tag_busmax.log` |
-| Thingy:53, SPIM4, 11 B | 14 µs | **71,4 k** | `xfers` segue (83–100 k/s), nada passa pelo filtro; teto real entre 71,4 e 83 k/s | M, `u_thingy_bus64k.log` |
+| Thingy:53, SPIM4, 11 B | 14 µs | **71,4 k** | `xfers` segue (83–100 k/s): o `START` reinicia a transação e nada passa pelo filtro; teto real entre 71,4 e 83 k/s | M, `u_thingy_bus64k.log` |
 
 ![Teto do barramento](docs/teto_barramento.svg)
 

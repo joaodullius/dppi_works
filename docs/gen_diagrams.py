@@ -290,82 +290,56 @@ def _drain_side(d, Y1, Y2, Y3, BH, filt):
     """Right-hand side shared by the two block diagrams: SPIM, RAM ring, wrap IRQ, drain thread, queue,
     and the per-sample alternative (dashed)."""
     d.box("spim", 606, Y1, 172, BH, ["SPIM (CSN por HW)", "TASKS_START", "EasyDMA TX/RX"], OK, OK_TINT)
-    d.box("ram", 838, Y1, 98, BH, ["RAM: anel", "APP_RING_SLOTS", "+ 8 de guarda"], OK, OK_TINT)
-    d.box("wrap", 600, Y2, 190, BH, ["IRQ DMA.RX.READY", "(STARTED no nRF5340)", "1 por volta: PTR = slot 0"], OFF, OFF_TINT)
-    d.box("drain", 826, Y2, 110, BH, ["Thread", "k_sleep(T)", "lê o head (PTR)", "arma o wrap 1×/volta"], OFF, OFF_TINT)
-    d.box("msgq", 700, Y3, 236, BH, ["k_msgq (APP_QUEUE_DEPTH)",
-                                     "put: filtra fresh, só novas" if filt else "put: todos os slots novos",
-                                     "consumidor: k_msgq_get, em ordem"], INK, PANEL)
-    d.box("persample", 400, Y3, 170, BH, ["IRQ END (por amostra)", "APP_PER_SAMPLE_IRQ:", "1 buffer, sem anel/wrap",
-                                          "copia → fila; torn"], OFF, OFF_TINT)
+    d.box("ram", 838, Y1, 98, BH, ["RAM: anel", "APP_RING_SLOTS"], OK, OK_TINT)
+    d.box("wrap", 600, Y2, 190, BH, ["IRQ READY (wrap)", "1 por volta:", "PTR = slot 0"], OFF, OFF_TINT)
+    d.box("drain", 826, Y2, 110, BH, ["Thread", "k_sleep(T)", "lê o head", "arma o wrap"], OFF, OFF_TINT)
+    d.box("msgq", 700, Y3, 236, BH, ["k_msgq", "put: filtra fresh" if filt else "put: slots novos",
+                                     "get: consumidor, em ordem"], INK, PANEL)
+    d.box("persample", 400, Y3, 170, BH, ["IRQ END (por amostra)", "APP_PER_SAMPLE_IRQ", "1 buffer, copia → fila"], OFF, OFF_TINT)
     d.link("spim", "ram", "DMA", OK)
-    d.link("spim", "wrap", "READY → IRQ (só quando armada)", OFF)
+    d.link("spim", "wrap", "READY (se armada)", OFF)
     d.link("ram", "drain", "slots novos", OK)
-    d.link("drain", "wrap", "arma (head ≥ anel/2)", OFF)
+    d.link("drain", "wrap", "arma", OFF)
     d.link("drain", "msgq", "k_msgq_put", OFF)
     # per-sample path, dashed: down the left of the wrap box so that no label lands on it
     d.parts.append(f"<path d='M630,{Y1+BH} V{Y1+BH+30} H485 V{Y3}' fill='none' stroke='{OFF}' stroke-width='1.6' "
                    f"stroke-dasharray='5 3' marker-end='url(#arr-red)'/>")
-    d.parts.append(f"<text x='557' y='{Y1+BH+24}' text-anchor='middle' fill='{OFF}' {font(10.5)}>{esc('END (modo por amostra)')}</text>")
+    d.parts.append(f"<text x='557' y='{Y1+BH+24}' text-anchor='middle' fill='{OFF}' {font(10.5)}>{esc('END (por amostra)')}</text>")
     d.link("persample", "msgq", "1 por amostra", OFF, dashed=True)
 
 
 def b1_blocks_int():
     d = Blocks("Blocos — caso 1: data-ready do sensor → GPIOTE → DPPI → SPIM (gpiote_dppi_spim)",
-               "Um canal DPPI; o EasyDMA enche o anel sozinho e a CPU entra uma vez por período de drenagem T (ou uma vez por amostra, tracejado)", h=560)
+               "Um canal DPPI; o EasyDMA enche o anel e a CPU entra uma vez por T (ou uma vez por amostra, tracejado)", h=500)
     Y1, Y2, Y3, BH = 96, 236, 360, 84
-    d.box("sensor", 24, Y1, 156, BH, ["Acelerômetro", "ADXL362 / BMI270 / ADXL382", "INT = data-ready (nível)"], SLATE, PANEL)
-    d.box("gpiote", 240, Y1, 136, BH, ["GPIOTE", "IN[n] event", "borda ↑ (ou ↓) do pino"])
-    d.box("dppi", 436, Y1, 112, BH, ["DPPI", "canal único", "EEP → TEP"])
+    d.box("sensor", 24, Y1, 156, BH, ["Acelerômetro", "ADXL362 / BMI270", "INT = data-ready"], SLATE, PANEL)
+    d.box("gpiote", 240, Y1, 136, BH, ["GPIOTE", "IN[n] event", "borda do pino"])
+    d.box("dppi", 436, Y1, 112, BH, ["DPPI", "canal único"])
     _drain_side(d, Y1, Y2, Y3, BH, filt=False)
     d.link("sensor", "gpiote", "pino INT")
     d.link("gpiote", "dppi", "evento", BLUE)
     d.link("dppi", "spim", "tarefa\nSTART", BLUE)
-    for i, s in enumerate(["Modo drenado, a cada T (APP_DRAIN_PERIOD_US, 10 ms):",
-                           "1. acorda (k_sleep) e lê DMA.RX.PTR: head = próximo slot;",
-                           "2. k_msgq_put dos slots [tail, head−1);",
-                           "   (com ≤ 4 pendentes espera 1 transação e entrega o head−1);",
-                           "3. se head ≥ anel/2, habilita a IRQ de READY uma vez:",
-                           "   a ISR devolve PTR ao slot 0 logo após READY (wrap);",
-                           "4. amostras a < 64 µs: espera o wrap acordada (≤ min(T/4, 8 períodos)).",
-                           "IRQ/s = 1/T + 1 por volta do anel. Latência ≤ T real (≤ 4 pendentes); acima, a mais nova sai na drenagem seguinte (T real + 1 período).",
-                           "Modo por amostra: IRQ de END copia cada rajada para a fila; latência de",
-                           "uma ISR, uma IRQ por amostra (fórmula ≈ 36 / 41 µs; medido limpo até 25 k/s na TAG, 20 k/s na Thingy, M)."]):
-        d.caption(Y2 + 14 + i * 17, s, INK if i in (0, 8) else SLATE)
-    d.caption(478, "Partida: 1 START por software depois de ligar o DPPI (o data-ready já está alto; é nível, não pulso).")
-    d.caption(498, "Nada além do GPIOTE do pino fica fora do domínio da SPIM: uma variante 100 % LP (GPIOTE30 + SPIM30) é só um overlay.")
     d.save("blocos_caso1_sensor_int.svg", LEGEND_BLOCKS)
 
 
 def b2_blocks_timer():
     d = Blocks("Blocos — caso 2: TIMER → DPPI → SPIM (timer_dppi_spim)",
-               "Igual ao caso 1 com o TIMER no lugar do GPIOTE; o sensor não participa do disparo", h=560)
+               "Igual ao caso 1 com o TIMER no lugar do GPIOTE; o sensor não participa do disparo", h=500)
     Y1, Y2, Y3, BH = 96, 236, 360, 84
-    d.box("hfxo", 24, Y1, 156, BH, ["HFXO", "pedido via onoff", "(FLPR: hfxo_launcher)"], SLATE, PANEL)
-    d.box("trig", 240, Y1, 136, BH, ["TIMER (disparo)", "1 MHz, CC0 = período", "short COMPARE0→CLEAR"])
-    d.box("dppi", 436, Y1, 112, BH, ["DPPI", "canal único", "EEP → TEP"])
+    d.box("hfxo", 24, Y1, 156, BH, ["HFXO", "pedido via onoff"], SLATE, PANEL)
+    d.box("trig", 240, Y1, 136, BH, ["TIMER (disparo)", "CC0 = período", "COMPARE0 → CLEAR"])
+    d.box("dppi", 436, Y1, 112, BH, ["DPPI", "canal único"])
     _drain_side(d, Y1, Y2, Y3, BH, filt=True)
     d.link("hfxo", "trig", "clock\nexato")
     d.link("trig", "dppi", "COMPARE0", BLUE)
     d.link("dppi", "spim", "tarefa\nSTART", BLUE)
-    for i, s in enumerate(["Mesma entrega do caso 1 (drenagem a cada T, ou IRQ de END).",
-                           "Diferenças: os registradores do sensor guardam sempre",
-                           "a última amostra, então ler em loop basta; a entrega lê",
-                           "o bit de data-ready no STATUS da própria rajada e descarta",
-                           "as repetidas (APP_QUEUE_FRESH_ONLY, skipped).",
-                           "Timer acima do ODR: repetidas com DATA_READY = 0.",
-                           "Timer abaixo do ODR real: perde amostras sem rastro —",
-                           "manter 5–10 % acima do ODR nominal.",
-                           "Bancada: APP_WRAP_LATENCY_STATS mede trigger → ISR."]):
-        d.caption(Y2 + 14 + i * 17, s, INK if i == 0 else SLATE)
-    d.caption(478, "Custo sobre o caso 1: TIMER de disparo + HFXO (155 µA, D) e as transações repetidas no barramento.")
+    d.caption(Y2 + 24, "Custo sobre o caso 1: TIMER + HFXO (155 µA, D).", SLATE)
     d.save("blocos_caso2_timer.svg", LEGEND_BLOCKS)
 
 
-# --------------------------------------------------------------------------- timing figures
 def d1_sensor_int():
     d = Diagram("Caso 1 — disparo pelo data-ready do sensor (INT → GPIOTE → DPPI → SPIM)",
-                "BMI270 na TAG a 1 600 Hz: 1 transação por amostra nova, CPU fora do caminho; escala ≈ 625 µs por período (3 períodos no desenho)",
+                "BMI270 a 1 600 Hz: uma transação por amostra, CPU fora do caminho (≈ 625 µs por período)",
                 6.0, ["amostra no sensor", "INT1 (data-ready)", "GPIOTE IN event", "DPPI ch", "SPIM START/END",
                       "CSN (hardware)", "EasyDMA → RAM", "CPU"], LEGEND_TIMING)
     for k, t in enumerate([0.4, 2.9, 5.4]):
@@ -386,15 +360,15 @@ def d1_sensor_int():
         d.level("CSN (hardware)", t + 0.54, min(t + 2.6, 6.0), True)
         d.block("EasyDMA → RAM", t + 0.12, t + 0.52, "17 B @ 8 MHz")
     d.level("CPU", 0, 6.0, False, OFF)
-    d.note(3.0, "CPU", "modo drenado: dorme; acorda a cada T (10 ms) e uma vez por volta do anel. Modo por amostra: uma IRQ de END por transação", OFF)
-    d.note(1.6, "INT1 (data-ready)", "nível: só desce quando os registradores de dados são lidos", WARN)
+    d.note(3.0, "CPU", "dorme: acorda a cada T (drenado) ou a cada END (por amostra)", OFF)
+    d.note(1.6, "INT1 (data-ready)", "nível: desce ao ler os dados", WARN)
     d.arrow(0.42, "INT1 (data-ready)", 0.5, "SPIM START/END", "sem CPU")
     d.save("caso1_sensor_int.svg")
 
 
 def d2_timer():
     d = Diagram("Caso 2 — disparo por TIMER (COMPARE → DPPI → SPIM), timer mais rápido que o ODR",
-                "Timer mais rápido que o sensor (escala comprimida: 3 novas em 7 leituras; a 100 µs contra 400 Hz seria 1 em 25): as repetidas levam DATA_READY = 0",
+                "Escala comprimida: 3 amostras novas em 7 leituras; as repetidas levam DATA_READY = 0",
                 7.0, ["amostra no sensor", "TIMER COMPARE0", "DPPI ch", "SPIM START/END", "EasyDMA → RAM",
                       "STATUS.DATA_READY lido", "CPU"], LEGEND_TIMING)
     for k in range(7):
@@ -412,7 +386,7 @@ def d2_timer():
         d.pulse("STATUS.DATA_READY lido", t, t + 0.25, OK if f else SLATE,
                 "1 (nova)" if f else "0 (repetida)", amp=22 if f else 8)
     d.level("CPU", 0, 7.0, False, OFF)
-    d.note(3.5, "CPU", "sem ISR por transação; a drenagem (a cada T) descarta as repetidas (APP_QUEUE_FRESH_ONLY)", OFF)
+    d.note(3.5, "CPU", "sem ISR por transação; as repetidas são descartadas na entrega (fresh)", OFF)
     d.marker(0.3, "período do timer")
     d.marker(1.3, "")
     d.save("caso2_timer.svg")
@@ -421,8 +395,8 @@ def d2_timer():
 def d3_drain():
     """Ring filled by the EasyDMA, drained every T by a thread; the wrap is armed once the head is past
     half of the ring and done by the READY IRQ."""
-    d = Diagram("Anel, drenagem e wrap — a CPU entra uma vez por período de drenagem T, nunca por transação",
-                "8 slots no desenho. A cada T a thread lê o head (DMA.RX.PTR), entrega os slots completos e, se head ≥ 4 (metade), arma a IRQ de READY, que devolve o PTR ao slot 0",
+    d = Diagram("Anel, drenagem e wrap — a CPU entra uma vez por T, nunca por transação",
+                "8 slots; a cada T a drenagem lê o head (h), entrega os slots completos e arma o wrap com h ≥ 4; a IRQ de READY devolve o PTR ao slot 0",
                 13.0, ["SPIM START → READY", "DMA.RX.PTR (array list)", "thread de drenagem (a cada T)",
                        "IRQ READY (wrap)", "k_msgq"], LEGEND_TIMING)
     for k in range(13):
@@ -436,27 +410,23 @@ def d3_drain():
         t = 0.1 + k
         col, tint = (OK, OK_TINT) if lap % 2 == 0 else (BLUE, BLUE_TINT)
         d.block("DMA.RX.PTR (array list)", t + 0.08, t + 0.9, f"slot {s}", col, tint)
-    d.pulse("thread de drenagem (a cada T)", 2.5, 3.3, OFF, "head 3, 3 pendentes: espera 1 transação; o START da 3 prova que a 2 acabou → put 0..2; não arma (3 < 4)", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 5.5, 6.3, OFF, "head 6: espera, START da 6 → put 3..5; arma (6 ≥ 4) e limpa o READY da 6", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 8.5, 9.3, OFF, "head 1 da volta nova: put 6..7 (fim da volta antiga); espera → put 0", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 11.5, 12.3, OFF, "head 4: espera → put 1..3; arma (4 ≥ 4)", label_side="right")
-    d.pulse("IRQ READY (wrap)", 7.15, 7.4, OFF, "READY da 7 (head = 8): PTR = slot 0 → a transação 8 escreve o slot 0; wrap_last = 7", label_side="right")
-    d.block("k_msgq", 3.3, 13.0, "consumidor: k_msgq_get, uma amostra por vez, em ordem; latência ≤ T real com ≤ 4 pendentes; com mais, o slot mais novo sai na drenagem seguinte", INK, PANEL)
-    d.note(3.4, "IRQ READY (wrap)", "janela do datasheet: logo após READY, antes do próximo START (o hardware reescreve o PTR a cada START)", WARN)
-    d.note(2.4, "DMA.RX.PTR (array list)", "sem CPU: o EasyDMA avança um slot por transação; a volta antiga fica meio anel à frente da nova. Com ≤ 4 pendentes a drenagem espera 1 transação (settle) e entrega também o head−1", OK)
+    d.pulse("thread de drenagem (a cada T)", 2.5, 3.3, OFF, "h3: put 0..2", label_side="right")
+    d.pulse("thread de drenagem (a cada T)", 5.5, 6.3, OFF, "h6: put 3..5, arma", label_side="right")
+    d.pulse("thread de drenagem (a cada T)", 8.5, 9.3, OFF, "h1: put 6,7,0", label_side="right")
+    d.pulse("IRQ READY (wrap)", 7.15, 7.4, OFF, "READY da 7: PTR = slot 0 (wrap_last = 7)", label_side="right")
+    d.block("k_msgq", 3.3, 13.0, "k_msgq_get: uma amostra por vez, em ordem", INK, PANEL)
     d.arrow(5.7, "thread de drenagem (a cada T)", 7.15, "IRQ READY (wrap)")
     d.arrow(7.13, "SPIM START → READY", 7.18, "IRQ READY (wrap)")
     d.marker(2.5, "T (APP_DRAIN_PERIOD_US)")
     d.marker(5.5, "")
     d.marker(8.5, "")
-    d.marker(11.5, "")
     d.save("anel_drenagem.svg")
 
 
 def d7_per_sample():
     """Per-sample mode: one buffer, the END IRQ copies the burst into the queue; the torn window."""
     d = Diagram("Modo por amostra (APP_PER_SAMPLE_IRQ) — um buffer, uma IRQ de END por transação",
-                "Esquerda: período confortável, a cópia acaba antes do próximo START. Direita: período curto demais, o START seguinte atropela a cópia (torn)",
+                "Esquerda: a cópia acaba antes do próximo START. Direita: o START seguinte atropela a cópia (torn)",
                 8.0, ["START (data-ready / timer)", "SPIM: transação", "IRQ END: memcpy + k_msgq_put", "k_msgq", "torn"],
                 LEGEND_TIMING)
     for k, t in enumerate([0.3, 2.3]):
@@ -464,38 +434,36 @@ def d7_per_sample():
         d.block("SPIM: transação", t + 0.05, t + 0.75, "rajada → buffer")
         d.block("IRQ END: memcpy + k_msgq_put", t + 0.8, t + 1.1, "ISR", OFF, OFF_TINT)
         d.pulse("k_msgq", t + 1.1, t + 1.15, OK, f"amostra k+{k}")
-    d.note(1.3, "IRQ END: memcpy + k_msgq_put", "≈ 1,2 µs acordado (entrada média 0,3–6 µs conforme o intervalo); entrada máx. 15,5 µs no M33 do nRF54L15, 26,3 µs no nRF5340 (M). Um START antes de a ISR entrar não é detectado", OFF)
+    d.note(1.3, "IRQ END: memcpy + k_msgq_put", "≈ 1,2 µs acordado; entrada máx. de idle 15,5 µs (M33) / 26,3 µs (nRF5340), M", OFF)
     d.marker(4.4, "")
     for k, t in enumerate([4.7, 5.55, 6.4]):
         d.pulse("START (data-ready / timer)", t, t + 0.05, WARN if k else BLUE, label=f"j+{k}")
         d.block("SPIM: transação", t + 0.05, t + 0.75, "", OK if k == 0 else WARN, OK_TINT if k == 0 else WARN_TINT)
     d.block("IRQ END: memcpy + k_msgq_put", 4.7 + 0.8, 4.7 + 1.1, "ISR", OFF, OFF_TINT)
     d.block("torn", 5.55, 5.8, "", WARN, WARN_TINT)
-    d.note(6.3, "torn", "o START de j+1 chega durante a cópia de j: READY reaparece, a amostra é descartada (torn++)", WARN)
-    d.note(6.3, "k_msgq", "vale enquanto período > transação + entrada máx. da ISR + 2 µs: ≈ 36 µs na TAG, ≈ 41 µs na Thingy (E); medido limpo até 40 µs nos dois (M)", OK)
+    d.note(6.3, "torn", "START de j+1 durante a cópia de j: descartada (torn++)", WARN)
     d.save("por_amostra.svg")
 
 
 def d4_bus_limit():
     d = Diagram("Teto do barramento — quando o período do timer é menor que a transação",
-                "Tag: 17 B a 8 MHz = 17 µs + START + CSNDUR ≈ 18,5 µs; a 19 µs cabe (52,6 k/s, comprovado), a 18 µs o START chega com a SPIM ocupada (não comprovado)",
-                6.0, ["TIMER (19 µs)", "SPIM ocupada", "TIMER (18 µs)", "SPIM ocupada ", "SPIM ocupada  "], LEGEND_TIMING)
+                "TAG, 17 B a 8 MHz ≈ 18,5 µs por transação: a 19 µs cabe (52,6 k/s), a 18 µs o START chega com a SPIM ocupada",
+                6.0, ["TIMER (19 µs)", "SPIM ocupada", "TIMER (18 µs)", "SPIM ocupada "], LEGEND_TIMING)
     for k in range(3):
         t = 0.3 + k * 1.9
         d.pulse("TIMER (19 µs)", t, t + 0.05)
         d.block("SPIM ocupada", t + 0.05, t + 1.85, "≈ 18,5 µs")
-    d.note(3.0, "SPIM ocupada", "margem ≈ 0,5 µs entre o fim da transação e o próximo START: 52 623 transações/s, late_wraps = 0, Z variando", OK)
+    d.note(3.0, "SPIM ocupada", "folga ≈ 0,5 µs: 52 623/s, late 0, Z variando (comprovado)", OK)
     for k in range(3):
         t = 0.3 + k * 1.8
         d.pulse("TIMER (18 µs)", t, t + 0.05, WARN if k else BLUE)
     d.block("SPIM ocupada ", 0.35, 2.15, "≈ 18,5 µs")
-    d.note(3.4, "SPIM ocupada ", "START com a SPIM ocupada: o ponteiro segue avançando (xfers 55,6 k/s), o bit fresh sai do ODR (363/s) e a faixa de Z estreita (0,58–0,62);", OFF)
-    d.note(3.4, "SPIM ocupada  ", "no nRF5340 o START reinicia a transação: nada passa pelo filtro (fresh 0) ou, numa captura anterior, Z congelado. O critério é o conteúdo, não a contagem", OFF)
+    d.note(3.4, "SPIM ocupada ", "ponteiro segue (55,6 k/s), fresh 363/s, Z estreita: não comprovado", OFF)
     d.save("teto_barramento.svg")
 
 
 def d5_oversampling():
-    d = Diagram("Timer × ODR — a margem mínima que não perde amostra (Tag, ODR real 401,8/s)",
+    d = Diagram("Timer × ODR — a margem mínima que não perde amostra (TAG, ODR real 401,8/s)",
                 "Dois relógios livres: abaixo do ODR perde em silêncio; ~1 % acima nunca perde e descarta as repetidas",
                 10.0, ["amostras do sensor (402/s)", "timer 2500 µs (400/s)", "novas lidas", "timer 2475 µs (404/s)",
                        "novas lidas "], LEGEND_TIMING)
@@ -516,16 +484,16 @@ def d5_oversampling():
         t = 0.6 + k * 0.99
         rep = k == 6
         d.pulse("novas lidas ", t + 0.05, t + 0.3, SLATE if rep else OK, "repetida" if rep else "", amp=8 if rep else 18)
-    d.note(5.0, "novas lidas", "fresh = 399,8/s < 401,8: ~2 amostras/s desaparecem sem deixar rastro no flag (skipped = 0)", OFF)
-    d.note(5.0, "novas lidas ", "fresh = 401,6/s: nenhuma perdida; as repetidas (skipped, 19 em 9 s) são descartadas na drenagem", OK)
+    d.note(5.0, "novas lidas", "fresh 399,8/s: ~2/s perdidas, skipped 0", OFF)
+    d.note(5.0, "novas lidas ", "fresh 401,6/s: nenhuma perdida, 19 repetidas descartadas", OK)
     d.save("timer_vs_odr.svg")
 
 
 def d6_adxl382():
     """Expected timing for the ADXL382 at 64 kHz ODR, data-ready driven (case 1 at the maximum rate)."""
     P = 15.625  # us, 64 kHz
-    d = Diagram("Caso ADXL382 a 64 kHz (INT0 → GPIOTE → DPPI → SPIM) — não testado em hardware, esperado",
-                "Período 15,6 µs; 11 B por amostra: 12,5 µs a 8 MHz (80 %), 7 µs a 16 MHz (45 %, SPIM4 nRF5340), 4,25 µs a 32 MHz (27 %, SPIM00 nRF54L15)",
+    d = Diagram("Caso ADXL382 a 64 kHz (INT0 → GPIOTE → DPPI → SPIM) — esperado, não testado",
+                "Período 15,6 µs, 11 B por amostra: 12,5 µs a 8 MHz (80 %), 7 µs a 16 MHz (45 %), 4,25 µs a 32 MHz (27 %)",
                 3 * P + 4, ["amostra ADXL382 (64 kHz)", "INT0 (DATA_READY)", "GPIOTE IN → DPPI", "SPIM 8 MHz: 11 B",
                             "SPIM 16 MHz: 11 B", "SPIM 32 MHz: 11 B", "wrap (IRQ READY)"], LEGEND_TIMING)
     for k in range(3):
@@ -536,15 +504,14 @@ def d6_adxl382():
         d.edge("INT0 (DATA_READY)", t + 13.0, False)
         d.level("INT0 (DATA_READY)", t + 13.0, t + P, False)
         d.pulse("GPIOTE IN → DPPI", t + 0.1, t + 0.4)
-        d.block("SPIM 8 MHz: 11 B", t + 0.5, t + 0.5 + 12.5, "12,5 µs (11 B + START + CSN)")
+        d.block("SPIM 8 MHz: 11 B", t + 0.5, t + 0.5 + 12.5, "12,5 µs")
         d.block("SPIM 16 MHz: 11 B", t + 0.5, t + 0.5 + 7.0, "7 µs", BLUE, BLUE_TINT)
         d.block("SPIM 32 MHz: 11 B", t + 0.5, t + 0.5 + 4.25, "4,25 µs", BLUE, BLUE_TINT)
-    d.note(P + 8.5, "SPIM 8 MHz: 11 B", "80 % do barramento, ≈ 3 µs até o próximo START (nRF5340 medido: 71,4 k/s válidos com 11 B a 14 µs)", OK)
-    d.note(P + 8.5, "SPIM 16 MHz: 11 B", "45 %: margem para CSNDUR maior e para o jitter do ODR do sensor", BLUE)
-    d.note(P + 8.5, "SPIM 32 MHz: 11 B", "27 %: só na SPIM00 (domínio MCU); a errata 8 não se aplica ao ADXL382 (1º byte 0x23, MSB 0)", BLUE)
+    d.note(P + 8.5, "SPIM 8 MHz: 11 B", "80 %: ≈ 3 µs até o próximo START (SPIM22, SPIM4)", OK)
+    d.note(P + 8.5, "SPIM 16 MHz: 11 B", "45 % (SPIM4 do nRF5340)", BLUE)
+    d.note(P + 8.5, "SPIM 32 MHz: 11 B", "27 % (só SPIM00, domínio MCU)", BLUE)
     d.pulse("wrap (IRQ READY)", 1.0 + P + 0.5, 1.0 + P + 3.0, OFF,
-            "1 wrap por volta do anel (≈ 138 amostras a T = 1 ms), na IRQ de READY com o core acordado: 1,1–2,2 µs na TAG, 1,8–2,3 µs na Thingy (M); prazo = um período", amp=14)
-    d.note(P + 8.5, "wrap (IRQ READY)", "sem ZLI, sem RRAM standby: a drenagem espera acordada (período < 64 µs); nRF5340 medido a 14 µs: 0 late. Modo por amostra: fora da faixa (15,6 < 12,5 + 15,5 ou 26 + 2)", OFF)
+            "1 por volta do anel, core acordado: 1,1–2,3 µs (M); prazo = um período", amp=14)
     d.marker(1.0, "15,6 µs")
     d.marker(1.0 + P, "")
     d.save("caso_adxl382_64k.svg")
@@ -552,24 +519,23 @@ def d6_adxl382():
 
 def c1_m33_vs_flpr():
     """Bar chart: trigger -> ISR latency of an IRQ from idle, Cortex-M33 vs FLPR on the nRF54L15."""
-    h = 486
+    h = 430
     p = [defs(), f"<rect width='100%' height='100%' fill='white'/>",
-         header("nRF54L15 — Cortex-M33 × FLPR (RISC-V): latência de uma IRQ saindo de idle (trigger → ISR)",
-                "nRF54L15 TAG, timer_dppi_spim com APP_WRAP_LATENCY_STATS: do COMPARE do trigger até a ISR de wrap; média e máximo (M)")]
-    # ---- panel A: latency bars
-    ax, ay, aw, ah = 60, 100, 540, 260
+         header("nRF54L15 — Cortex-M33 × FLPR: latência de uma IRQ saindo de idle (trigger → ISR)",
+                "TAG, timer_dppi_spim com APP_WRAP_LATENCY_STATS; barra cheia = média, clara = máximo (M)")]
+    ax, ay, aw, ah = 70, 100, W - 24 - 70, 240
     ymax = 20.0
-    p.append(f"<text x='{ax}' y='{ay-14}' fill='{INK}' {font(12, bold=True)}>Latência trigger → ISR de wrap (µs)</text>")
+    p.append(f"<text x='{ax}' y='{ay-14}' fill='{INK}' {font(12, bold=True)}>µs</text>")
     for v in (0, 5, 10, 15, 20):
         y = ay + ah - ah * v / ymax
         p.append(f"<line x1='{ax}' y1='{y:.1f}' x2='{ax+aw}' y2='{y:.1f}' stroke='{LINE}' stroke-width='1' stroke-dasharray='2 4'/>")
         p.append(f"<text x='{ax-8}' y='{y+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v}</text>")
-    bars = [("M33 padrão, idle\n(atual, 1 ms, com log)", 16.07, 16.31, OFF, OFF_TINT),
-            ("M33 acordado\n(atual, ≤ 50 µs, com log)", 1.81, 2.18, WARN, WARN_TINT),
-            ("M33 padrão ou constlat\n(anterior, sem log)", 16.8, 17.3, OFF, OFF_TINT),
+    bars = [("M33 em idle\n(atual, com log)", 16.07, 16.31, OFF, OFF_TINT),
+            ("M33 acordado\n(atual, com log)", 1.81, 2.18, WARN, WARN_TINT),
+            ("M33 em idle\n(anterior, sem log)", 16.8, 17.3, OFF, OFF_TINT),
             ("M33 + RRAM standby\n(anterior, sem log)", 2.75, 2.93, OK, OK_TINT),
-            ("FLPR, RAM\n(anterior, sem log)", 2.43, 2.50, BLUE, BLUE_TINT)]
-    bw = 62
+            ("FLPR, código em RAM\n(anterior, sem log)", 2.43, 2.50, BLUE, BLUE_TINT)]
+    bw = 80
     gap = (aw - bw * len(bars)) / (len(bars) + 1)
     for i, (name, avg, mx, col, tint) in enumerate(bars):
         x = ax + gap + i * (bw + gap)
@@ -581,33 +547,7 @@ def c1_m33_vs_flpr():
         for k, line in enumerate(name.split("\n")):
             p.append(f"<text x='{x + bw/2:.1f}' y='{ay + ah + 16 + 13*k}' text-anchor='middle' fill='{INK}' {font(10.5)}>{esc(line)}</text>")
     p.append(f"<line x1='{ax}' y1='{ay+ah}' x2='{ax+aw}' y2='{ay+ah}' stroke='{SLATE}' stroke-width='1'/>")
-    p.append(legend_svg(ax, ay + ah + 52, [(INK, "barra cheia = média"), (LINE, "barra clara = máximo"),
-                                          (OFF, "atual = u_tag_wrap_latency.log (M); anterior = mecanismo de entrega anterior, log não incluído")]))
-    # ---- panel B: notes
-    bx, by = 640, 100
-    box_h = 278
-    p.append(f"<rect x='{bx}' y='{by}' width='{W-24-bx}' height='{box_h}' rx='8' fill='{PANEL}' stroke='{LINE}' filter='url(#shadow)'/>")
-    lines = [
-        (INK, True, "O que os 16 µs são"),
-        (SLATE, False, "Core em idle: a RRAM fica em power-down e"),
-        (SLATE, False, "a 1ª instrução da ISR espera 13 µs (tIDLE2CPU)."),
-        (SLATE, False, "Constant latency sozinho não muda isso."),
-        (SLATE, False, "RRAM em standby: 2,75 µs. FLPR (RAM): 2,43 µs."),
-        (INK, True, "Quando importa"),
-        (SLATE, False, "Para uma IRQ com prazo < ~18 µs que chegue com o"),
-        (SLATE, False, "core dormindo, e para o custo de cada drenagem."),
-        (SLATE, False, "O wrap não depende disso: com amostras a < 64 µs"),
-        (SLATE, False, "a thread espera acordada e o wrap sai em 1,1–2,2 µs."),
-        (INK, True, "Modo por amostra (ISR de END, M)"),
-        (SLATE, False, "≈ 1,2 µs acordado, entrada até 15,5 µs de idle (média"),
-        (SLATE, False, "0,3–6 µs); vale enquanto período > transação + 15,5 + 2 µs"),
-        (SLATE, False, "(≈ 36 µs): limpo até 40 µs (25 k/s); marginal a 30–25 µs."),
-    ]
-    y = by + 22
-    for col, bold, s in lines:
-        p.append(f"<text x='{bx+14}' y='{y}' fill='{col}' {font(11, bold=bold)}>{esc(s)}</text>")
-        y += 18 if bold else 17
-    p.append(f"<text x='{W-24}' y='{h-10}' text-anchor='end' fill='{SLATE}' {font(10)}>{esc('Custo de corrente: low-power idle 2,9 µA (ION_IDLE8); constant latency 0,55 mA (ION_IDLE11); RRAM standby: não publicado, medir com PPK2')}</text>")
+    p.append(f"<text x='{ax}' y='{h-12}' fill='{SLATE}' {font(10.5)}>{esc('Em idle a RRAM está em power-down (tIDLE2CPU 13 µs). Acordado: a thread espera o wrap com amostras a < 64 µs.')}</text>")
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
     with open(os.path.join(OUT, "m33_vs_flpr_nrf54l15.svg"), "w", encoding="utf-8") as fh:
         fh.write(svg)
@@ -618,17 +558,17 @@ def c3_consumo_modos():
     """Three panels: modelled SoC current for the default drain period, for the shortest one and for the
     per-sample mode, SPIM22 vs SPIM00, at 1 600 / 16 000 / 50 000 amostras/s."""
     import math
-    h = 580
+    h = 450
     rates = ["1 600", "16 000", "50 000"]
     inst = [("SPIM22", BLUE), ("SPIM00", OFF)]
     panels = [
         ("Drenado, T = 10 ms (1 600/s), 1 ms (16 k, 50 k/s)", [[48, 349], [288, 592], [702, 1016]]),
-        ("Drenado, T = período (625 → ≈ 710 µs), 100 → ≈ 180 µs acima", [[176, 476], [675, 979], [952, 1265]]),
+        ("Drenado, T = período (≈ 710 µs; ≈ 180 µs acima)", [[176, 476], [675, 979], [952, 1265]]),
         ("Por amostra (APP_PER_SAMPLE_IRQ)", [[59, 359], [245, 549], None]),
     ]
     p = [defs(), "<rect width='100%' height='100%' fill='white'/>",
-         header("nRF54L15 — corrente média do SoC por modo de entrega, instância de SPIM e taxa (modelo E, sem PPK2)",
-                "Caso 1 (data-ready), 11 B por rajada, toda amostra vai para a fila; SPIM22 a 8 MHz, SPIM00 a 32 MHz; Cortex-M33 padrão, RRAM em power-down")]
+         header("nRF54L15 — corrente média do SoC por modo de entrega, instância e taxa (modelo E, sem PPK2)",
+                "Caso 1, 11 B por rajada, toda amostra na fila; SPIM22 a 8 MHz, SPIM00 a 32 MHz; M33 padrão. Premissas em docs/POWER.md")]
     ymin, ymax = math.log10(20), math.log10(2000)
     ay, ah = 112, 250
     pw, gap, x0 = 270, 24, 54
@@ -664,16 +604,7 @@ def c3_consumo_modos():
         p.append(f"<text x='{ax + pw/2:.1f}' y='{ay+ah+30}' text-anchor='middle' fill='{SLATE}' {font(10)}>amostras por segundo</text>")
     p.append(f"<text x='20' y='{ay-10}' fill='{SLATE}' {font(10)}>{esc('µA, log')}</text>")
     p.append(legend_svg(x0, ay + ah + 54, [(BLUE, "SPIM22 (PERI, P1, 8 MHz)"), (OFF, "SPIM00 (MCU, P2, 32 MHz)"),
-                                            (LINE, "por amostra a 50 k/s: 20 µs < 12,5 de transação + 15,5 de entrada máx. da ISR + 2; FLPR: sem número")]))
-    bx, by, bw2 = x0, ay + ah + 66, W - 24 - x0
-    p.append(f"<rect x='{bx}' y='{by}' width='{bw2}' height='{94}' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
-    p.append(f"<text x='{bx+12}' y='{by+18}' fill='{INK}' {font(11, bold=True)}>Leitura</text>")
-    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('T curto custa 3,6× (1,6 k/s), 2,3× (16 k/s) e 1,4× (50 k/s) o T longo: cada drenagem são ~21 µs de CPU (16,1 a RRAM acordando, média medida) + 15 µs de assentamento com ≤ 4 amostras; por amostra 3,5 µs.')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('Por amostra: 7,5 µs de CPU por amostra a 1 600/s e 4,1 a 16 k/s (entrada média da ISR 3,8 e 0,4 µs, E: interpolada entre os passos medidos, + 1,2 de ISR + 2,5 de consumidor). Custa menos que T = período em toda a faixa (59 contra 176 µA a 1 600/s; 245 contra 675 a 16 k/s).')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+67}' fill='{SLATE}' {font(10.5)}>{esc('T real = T arredondado ao tick de 32 µs + 1 tick + a drenagem: 100 µs → 176–191 µs (5 200–5 700 drenagens/s; 3 e 9 amostras de latência a 16 k e 50 k/s), 1 ms → 1,08 ms. A 16 k e 50 k/s o T = 10 ms pediria anel de 320 e 1 000 slots.')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+83}' fill='{SLATE}' {font(10.5)}>{esc('SPIM00 custa ~+300 µA em qualquer taxa: só paga por barramento. Wrap: uma IRQ por volta do anel (anel/2 amostras); a < 64 µs de período a thread espera acordada (um período por wrap, ou o limite de 25 µs a 16 k/s com T = 100 µs).')}</text>")
-    p.append(f"<text x='{x0}' y='{h-24}' fill='{SLATE}' {font(9.5)}>{esc('Premissas: base 2,9 µA; PERI ligado 20 µA (R, Academy); domínio MCU 300 µA (E, proxy TIMER00) só na SPIM00; SPIM ativa 0,25 mA (SPIM2x) / 0,8 mA (SPIM00); t = 12,5 µs (8 MHz) ou 4,25 µs (32 MHz);')}</text>")
-    p.append(f"<text x='{x0}' y='{h-10}' fill='{SLATE}' {font(9.5)}>{esc('CPU 2,6 mA × [por drenagem: acordar médio medido (16,1 µs a ≥ 500 µs, 15,5 a 250, 9,0 a 100 µs) + 5 de trabalho (+ 15 de assentamento com ≤ 4 amostras); por wrap: acordar + 3 µs de idle ou um período + 3 µs acordado; por amostra: 1 µs de put + 2,5 de consumidor; modo por amostra: entrada média + 1,2 + 2,5 µs] (E).')}</text>")
+                                            (LINE, "hachurado: fora da faixa do modo por amostra")]))
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
     with open(os.path.join(OUT, "consumo_modos_nrf54l15.svg"), "w", encoding="utf-8") as fh:
         fh.write(svg)
