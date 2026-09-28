@@ -87,7 +87,7 @@ static uint8_t burst_tx[SENSOR_BURST_LEN];
 
 static uint32_t dropped;      /* samples that did not fit in the queue */
 #if !defined(CONFIG_APP_PER_SAMPLE_IRQ)
-static uint32_t late_wraps;   /* wraps written after the next START (one sample skipped) */
+static uint32_t late_wraps;   /* wraps written after the next START (at most one sample skipped each) */
 static uint32_t overflows;    /* laps in which the DMA reached the guard slots */
 static uint32_t lap_base;     /* transactions completed in previous laps (for xfers) */
 #endif
@@ -176,7 +176,7 @@ static void wrap_isr(void)
 	started = nrf_spim_event_check(spim.p_reg, READY_EVENT);
 	h2 = head_index();
 	if (started && h2 == 0) {
-		late_wraps++;      /* transaction k+1 used slot h: skipped */
+		late_wraps++;      /* transaction k+1 took slot h: delivered or skipped, see above */
 	}
 	wrap_last = h - 1;
 	wrap_armed = false;
@@ -233,8 +233,8 @@ static void overflow_check(uint32_t h)
 /*
  * One buffer, no ring, no wrap: the END ISR copies the burst into the queue
  * before the next transaction overwrites it. That holds while the sample
- * period exceeds the transaction time plus the ISR latency (~17 us from
- * idle on the nRF54L15 M33, ~26 us on the nRF5340) plus the copy. A START
+ * period exceeds the transaction time plus the ISR entry from idle (up to
+ * ~15.5 us on the nRF54L15 M33, ~26 us on the nRF5340) plus ~2 us. A START
  * during the copy is detected (READY event set after being cleared) and the
  * sample is dropped as torn; a START before the ISR entry looks like the
  * normal one and cannot be told apart, so above that rate the data may be
@@ -285,13 +285,19 @@ static void sample_isr(void)
 #define SETTLE_MAX_PENDING 4
 
 /* Slots certainly complete after waiting one transaction time: h if no new
- * transaction started meanwhile (slot h-1 ended), else all below the newest */
+ * transaction started meanwhile (slot h-1 ended), else all below the newest.
+ * If the pending wrap fired during the wait the head restarted from 0: the
+ * transaction that wrapped proves slot h-1 ended, and slot h itself (the
+ * old lap's last, wrap_last) is handled by the next drain. */
 static uint32_t settled(uint32_t h)
 {
 	uint32_t h2;
 
 	k_busy_wait(XFER_SETTLE_US);
 	h2 = head_index();
+	if (wrap_done || h2 < h) {
+		return h;
+	}
 	return h2 == h ? h : h2 - 1;
 }
 
@@ -307,13 +313,17 @@ static uint32_t last_drain_cyc;    /* k_cycle time of the previous drain */
 
 static void drain(void)
 {
+	/* wrap_done is sampled before the head: a wrap landing between the two
+	 * reads yields a small new-lap head with the flag still clear, which
+	 * delivers nothing this time (tail is past it) and is folded next drain */
+	bool wrapped = wrap_done;
 	uint32_t h = head_index();
 	uint32_t now = k_cycle_get_32();
 	uint32_t arrived = 0;
 	uint32_t upto;
 
 	overflow_check(h);
-	if (wrap_done) {
+	if (wrapped) {
 		uint32_t last = wrap_last;
 
 		/* Everything up to and including wrap_last is complete once the new

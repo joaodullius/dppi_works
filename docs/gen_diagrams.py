@@ -328,9 +328,9 @@ def b1_blocks_int():
                            "3. se head ≥ anel/2, habilita a IRQ de READY uma vez:",
                            "   a ISR devolve PTR ao slot 0 logo após READY (wrap);",
                            "4. amostras a < 64 µs: espera o wrap acordada (≤ min(T/4, 8 períodos)).",
-                           "IRQ/s = 1/T + 1 por volta do anel. Latência ≤ T real (≤ 4 pendentes); 2 × T real p/ a mais nova.",
+                           "IRQ/s = 1/T + 1 por volta do anel. Latência ≤ T real (≤ 4 pendentes); acima, a mais nova sai na drenagem seguinte (T real + 1 período).",
                            "Modo por amostra: IRQ de END copia cada rajada para a fila; latência de",
-                           "uma ISR, uma IRQ por amostra (fórmula ≈ 36 / 41 µs; medido limpo até 25 k/s nos dois, M)."]):
+                           "uma ISR, uma IRQ por amostra (fórmula ≈ 36 / 41 µs; medido limpo até 25 k/s na TAG, 20 k/s na Thingy, M)."]):
         d.caption(Y2 + 14 + i * 17, s, INK if i in (0, 8) else SLATE)
     d.caption(478, "Partida: 1 START por software depois de ligar o DPPI (o data-ready já está alto; é nível, não pulso).")
     d.caption(498, "Nada além do GPIOTE do pino fica fora do domínio da SPIM: uma variante 100 % LP (GPIOTE30 + SPIM30) é só um overlay.")
@@ -427,24 +427,25 @@ def d3_drain():
                        "IRQ READY (wrap)", "k_msgq"], LEGEND_TIMING)
     for k in range(13):
         t = 0.1 + k
-        d.pulse("SPIM START → READY", t, t + 0.06, label=str(k) if k in (6, 7) else None)
-    # transaction k writes slot k for k <= 6; the wrap at READY of 6 sends 7 to slot 0
-    slots = [0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5]
-    laps = [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]
+        d.pulse("SPIM START → READY", t, t + 0.06, label=str(k) if k in (7, 8) else None)
+    # transaction k writes slot k for k <= 7; armed at head 6 (READY of 6 cleared by
+    # arm_wrap), the wrap fires at READY of 7 and sends 8 to slot 0
+    slots = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4]
+    laps = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
     for k, (s, lap) in enumerate(zip(slots, laps)):
         t = 0.1 + k
         col, tint = (OK, OK_TINT) if lap % 2 == 0 else (BLUE, BLUE_TINT)
         d.block("DMA.RX.PTR (array list)", t + 0.08, t + 0.9, f"slot {s}", col, tint)
     d.pulse("thread de drenagem (a cada T)", 2.5, 3.3, OFF, "head 3, 3 pendentes: espera 1 transação; o START da 3 prova que a 2 acabou → put 0..2; não arma (3 < 4)", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 5.5, 6.3, OFF, "head 6: espera, START da 6 → put 3..5; arma (6 ≥ 4)", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 8.5, 9.3, OFF, "head 2 da volta nova: put 6 (fim da volta antiga); espera → put 0, 1", label_side="right")
-    d.pulse("thread de drenagem (a cada T)", 11.5, 12.3, OFF, "head 5: espera → put 2..4; arma (5 ≥ 4)", label_side="right")
-    d.pulse("IRQ READY (wrap)", 6.15, 6.4, OFF, "READY da 6 (head = 7): PTR = slot 0 → a transação 7 escreve o slot 0; wrap_last = 6", label_side="right")
+    d.pulse("thread de drenagem (a cada T)", 5.5, 6.3, OFF, "head 6: espera, START da 6 → put 3..5; arma (6 ≥ 4) e limpa o READY da 6", label_side="right")
+    d.pulse("thread de drenagem (a cada T)", 8.5, 9.3, OFF, "head 1 da volta nova: put 6..7 (fim da volta antiga); espera → put 0", label_side="right")
+    d.pulse("thread de drenagem (a cada T)", 11.5, 12.3, OFF, "head 4: espera → put 1..3; arma (4 ≥ 4)", label_side="right")
+    d.pulse("IRQ READY (wrap)", 7.15, 7.4, OFF, "READY da 7 (head = 8): PTR = slot 0 → a transação 8 escreve o slot 0; wrap_last = 7", label_side="right")
     d.block("k_msgq", 3.3, 13.0, "consumidor: k_msgq_get, uma amostra por vez, em ordem; latência ≤ T real com ≤ 4 pendentes; com mais, o slot mais novo sai na drenagem seguinte", INK, PANEL)
     d.note(3.4, "IRQ READY (wrap)", "janela do datasheet: logo após READY, antes do próximo START (o hardware reescreve o PTR a cada START)", WARN)
     d.note(2.4, "DMA.RX.PTR (array list)", "sem CPU: o EasyDMA avança um slot por transação; a volta antiga fica meio anel à frente da nova. Com ≤ 4 pendentes a drenagem espera 1 transação (settle) e entrega também o head−1", OK)
-    d.arrow(5.7, "thread de drenagem (a cada T)", 6.15, "IRQ READY (wrap)")
-    d.arrow(6.13, "SPIM START → READY", 6.18, "IRQ READY (wrap)")
+    d.arrow(5.7, "thread de drenagem (a cada T)", 7.15, "IRQ READY (wrap)")
+    d.arrow(7.13, "SPIM START → READY", 7.18, "IRQ READY (wrap)")
     d.marker(2.5, "T (APP_DRAIN_PERIOD_US)")
     d.marker(5.5, "")
     d.marker(8.5, "")
@@ -542,7 +543,7 @@ def d6_adxl382():
     d.note(P + 8.5, "SPIM 16 MHz: 11 B", "45 %: margem para CSNDUR maior e para o jitter do ODR do sensor", BLUE)
     d.note(P + 8.5, "SPIM 32 MHz: 11 B", "27 %: só na SPIM00 (domínio MCU); a errata 8 não se aplica ao ADXL382 (1º byte 0x23, MSB 0)", BLUE)
     d.pulse("wrap (IRQ READY)", 1.0 + P + 0.5, 1.0 + P + 3.0, OFF,
-            "1 wrap por volta do anel (≈ 138 amostras a T = 1 ms), na IRQ de READY com o core acordado: 1,1–2,1 µs na TAG, 1,6–2,3 µs na Thingy (M); prazo = um período", amp=14)
+            "1 wrap por volta do anel (≈ 138 amostras a T = 1 ms), na IRQ de READY com o core acordado: 1,1–2,2 µs na TAG, 1,8–2,3 µs na Thingy (M); prazo = um período", amp=14)
     d.note(P + 8.5, "wrap (IRQ READY)", "sem ZLI, sem RRAM standby: a drenagem espera acordada (período < 64 µs); nRF5340 medido a 14 µs: 0 late. Modo por amostra: fora da faixa (15,6 < 12,5 + 15,5 ou 26 + 2)", OFF)
     d.marker(1.0, "15,6 µs")
     d.marker(1.0 + P, "")
@@ -563,8 +564,8 @@ def c1_m33_vs_flpr():
         y = ay + ah - ah * v / ymax
         p.append(f"<line x1='{ax}' y1='{y:.1f}' x2='{ax+aw}' y2='{y:.1f}' stroke='{LINE}' stroke-width='1' stroke-dasharray='2 4'/>")
         p.append(f"<text x='{ax-8}' y='{y+4:.1f}' text-anchor='end' fill='{SLATE}' {font(10.5)}>{v}</text>")
-    bars = [("M33 padrão, idle\n(atual, 1 ms, com log)", 15.29, 16.37, OFF, OFF_TINT),
-            ("M33 acordado\n(atual, ≤ 50 µs, com log)", 1.68, 2.12, WARN, WARN_TINT),
+    bars = [("M33 padrão, idle\n(atual, 1 ms, com log)", 16.07, 16.31, OFF, OFF_TINT),
+            ("M33 acordado\n(atual, ≤ 50 µs, com log)", 1.81, 2.18, WARN, WARN_TINT),
             ("M33 padrão ou constlat\n(anterior, sem log)", 16.8, 17.3, OFF, OFF_TINT),
             ("M33 + RRAM standby\n(anterior, sem log)", 2.75, 2.93, OK, OK_TINT),
             ("FLPR, RAM\n(anterior, sem log)", 2.43, 2.50, BLUE, BLUE_TINT)]
@@ -596,7 +597,7 @@ def c1_m33_vs_flpr():
         (SLATE, False, "Para uma IRQ com prazo < ~18 µs que chegue com o"),
         (SLATE, False, "core dormindo, e para o custo de cada drenagem."),
         (SLATE, False, "O wrap não depende disso: com amostras a < 64 µs"),
-        (SLATE, False, "a thread espera acordada e o wrap sai em 1,1–2,1 µs."),
+        (SLATE, False, "a thread espera acordada e o wrap sai em 1,1–2,2 µs."),
         (INK, True, "Modo por amostra (ISR de END, M)"),
         (SLATE, False, "≈ 1,2 µs acordado, entrada até 15,5 µs de idle (média"),
         (SLATE, False, "0,3–6 µs); vale enquanto período > transação + 15,5 + 2 µs"),
@@ -622,7 +623,7 @@ def c3_consumo_modos():
     inst = [("SPIM22", BLUE), ("SPIM00", OFF)]
     panels = [
         ("Drenado, T = 10 ms (1 600/s), 1 ms (16 k, 50 k/s)", [[48, 349], [288, 592], [702, 1016]]),
-        ("Drenado, T = período (625 → ≈ 710 µs), 100 → ≈ 180 µs acima", [[174, 474], [656, 960], [900, 1213]]),
+        ("Drenado, T = período (625 → ≈ 710 µs), 100 → ≈ 180 µs acima", [[176, 476], [675, 979], [952, 1265]]),
         ("Por amostra (APP_PER_SAMPLE_IRQ)", [[59, 359], [245, 549], None]),
     ]
     p = [defs(), "<rect width='100%' height='100%' fill='white'/>",
@@ -667,12 +668,12 @@ def c3_consumo_modos():
     bx, by, bw2 = x0, ay + ah + 66, W - 24 - x0
     p.append(f"<rect x='{bx}' y='{by}' width='{bw2}' height='{94}' rx='8' fill='{PANEL}' stroke='{LINE}'/>")
     p.append(f"<text x='{bx+12}' y='{by+18}' fill='{INK}' {font(11, bold=True)}>Leitura</text>")
-    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('T curto custa 3,6× (1,6 k/s), 2,3× (16 k/s) e 1,3× (50 k/s) o T longo: cada drenagem são ~20 µs de CPU (15,5 a RRAM acordando, média medida) + 15 µs de assentamento com ≤ 4 amostras; por amostra 3,5 µs.')}</text>")
-    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('Por amostra: 7,5 µs de CPU por amostra a 1 600/s e 4,1 a 16 k/s (entrada média medida da ISR 3,8 e 0,4 µs + 1,2 de ISR + 2,5 de consumidor). Custa menos que T = período em toda a faixa (59 contra 174 µA a 1 600/s; 245 contra 656 a 16 k/s).')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+35}' fill='{SLATE}' {font(10.5)}>{esc('T curto custa 3,6× (1,6 k/s), 2,3× (16 k/s) e 1,4× (50 k/s) o T longo: cada drenagem são ~21 µs de CPU (16,1 a RRAM acordando, média medida) + 15 µs de assentamento com ≤ 4 amostras; por amostra 3,5 µs.')}</text>")
+    p.append(f"<text x='{bx+12}' y='{by+51}' fill='{SLATE}' {font(10.5)}>{esc('Por amostra: 7,5 µs de CPU por amostra a 1 600/s e 4,1 a 16 k/s (entrada média da ISR 3,8 e 0,4 µs, E: interpolada entre os passos medidos, + 1,2 de ISR + 2,5 de consumidor). Custa menos que T = período em toda a faixa (59 contra 176 µA a 1 600/s; 245 contra 675 a 16 k/s).')}</text>")
     p.append(f"<text x='{bx+12}' y='{by+67}' fill='{SLATE}' {font(10.5)}>{esc('T real = T arredondado ao tick de 32 µs + 1 tick + a drenagem: 100 µs → 176–191 µs (5 200–5 700 drenagens/s; 3 e 9 amostras de latência a 16 k e 50 k/s), 1 ms → 1,08 ms. A 16 k e 50 k/s o T = 10 ms pediria anel de 320 e 1 000 slots.')}</text>")
     p.append(f"<text x='{bx+12}' y='{by+83}' fill='{SLATE}' {font(10.5)}>{esc('SPIM00 custa ~+300 µA em qualquer taxa: só paga por barramento. Wrap: uma IRQ por volta do anel (anel/2 amostras); a < 64 µs de período a thread espera acordada (um período por wrap, ou o limite de 25 µs a 16 k/s com T = 100 µs).')}</text>")
     p.append(f"<text x='{x0}' y='{h-24}' fill='{SLATE}' {font(9.5)}>{esc('Premissas: base 2,9 µA; PERI ligado 20 µA (R, Academy); domínio MCU 300 µA (E, proxy TIMER00) só na SPIM00; SPIM ativa 0,25 mA (SPIM2x) / 0,8 mA (SPIM00); t = 12,5 µs (8 MHz) ou 4,25 µs (32 MHz);')}</text>")
-    p.append(f"<text x='{x0}' y='{h-10}' fill='{SLATE}' {font(9.5)}>{esc('CPU 2,6 mA × [por drenagem: acordar médio medido (15,5 µs a ≥ 250 µs, 8,8 a 100 µs) + 5 de trabalho (+ 15 de assentamento com ≤ 4 amostras); por wrap: acordar + 3 µs de idle ou um período + 3 µs acordado; por amostra: 1 µs de put + 2,5 de consumidor; modo por amostra: entrada média + 1,2 + 2,5 µs] (E).')}</text>")
+    p.append(f"<text x='{x0}' y='{h-10}' fill='{SLATE}' {font(9.5)}>{esc('CPU 2,6 mA × [por drenagem: acordar médio medido (16,1 µs a ≥ 500 µs, 15,5 a 250, 9,0 a 100 µs) + 5 de trabalho (+ 15 de assentamento com ≤ 4 amostras); por wrap: acordar + 3 µs de idle ou um período + 3 µs acordado; por amostra: 1 µs de put + 2,5 de consumidor; modo por amostra: entrada média + 1,2 + 2,5 µs] (E).')}</text>")
     svg = f"<svg xmlns='http://www.w3.org/2000/svg' width='{W}' height='{h}' viewBox='0 0 {W} {h}'>{''.join(p)}</svg>"
     with open(os.path.join(OUT, "consumo_modos_nrf54l15.svg"), "w", encoding="utf-8") as fh:
         fh.write(svg)

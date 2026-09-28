@@ -57,10 +57,12 @@ config APP_DRAIN_PERIOD_US
 	  the slots that arrived into the message queue; once per lap (every
 	  APP_RING_SLOTS/2 samples or more) it also arms the ring wrap. The
 	  actual period is rounded up to the kernel tick (plus one tick) and
-	  the drain time is added to it. Delivery latency is at most that real
-	  period (at low rates the newest sample is delivered once one
-	  transaction time has passed without a new START). Interrupts per
-	  second = 1 / period (wake-up) + wraps.
+	  the drain time is added to it. Delivery latency: at most that real
+	  period when at most 4 samples arrive per drain (the drain waits one
+	  transaction time so the newest one is complete); above that the
+	  newest sample of each drain goes out on the next drain (real period
+	  plus one sample period). Interrupts per second = 1 / period (wake-up)
+	  + wraps.
 
 config APP_RING_SLOTS
 	int "Ring size in samples"
@@ -79,8 +81,9 @@ config APP_PER_SAMPLE_IRQ
 	  One interrupt per transaction instead of the drain thread: a single
 	  buffer, and the END ISR copies the sample that just ended into the
 	  queue (latency = ISR entry + copy; ~1.2 us with the core awake, up to
-	  ~17 us from idle on the nRF54L15 M33). Valid while the sample period
-	  exceeds the transaction time plus that latency plus the copy; a
+	  ~15.5 us from idle on the nRF54L15 M33, ~26 us on the nRF5340). Valid
+	  while the sample period exceeds the transaction time plus that entry
+	  plus ~2 us (measured clean down to 40 us on both SoCs); a
 	  transaction that starts during the copy is detected and the sample
 	  dropped as "torn", one that starts before the ISR entry is not (the
 	  data may then be mixed). No ring, no wrap; APP_DRAIN_PERIOD_US,

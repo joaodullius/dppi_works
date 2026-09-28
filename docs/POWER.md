@@ -28,8 +28,8 @@ subsistema de sensores do Zephyr, e o consumo é outro assunto.
 | SPIM ativa | 0,25 mA (SPIM2x; proxy: TIMER20 a 16 MHz 142 µA, TWIM ~250 µA na Academy); 0,8 mA (SPIM00, razão TIMER00/TIMER20) | 1,7 mA a 8 Mbps (`ISPIM2`, HFINT); 1,9 mA a 16 Mbps (E, entre `ISPIM2` e `ISPIM4` 2,1 mA a 32 Mbps) | 54L: E; 5340: D |
 | TIMER de disparo (caso 2) | 121 µA (`ITIMER2`, TIMER20 a 1 MHz) + HFXO 34 µA (`ISTBY_X32M_X2`) | 670 µA (`ITIMER1`, HFXO64M) + HFXO 135 µA | D |
 | CPU ativa | 2,6 mA (`IAPPCPU0`, 128 MHz) | 3,3 mA (`IAPPCPU5`, 64 MHz, HFINT) | D |
-| Acordar de idle (IRQ ou `k_sleep`) | a média medida da latência trigger → ISR de wrap no mesmo intervalo entre eventos (`u_tag_wrap_latency.log`, M): 15,5 µs com intervalos ≥ 250 µs (15,3–15,5 de média, 16,4 de máximo: a RRAM está em power-down, `tIDLE2CPU` 13 µs, D), 8,8 µs a 100 µs, 1,2 µs quando o core não chegou a dormir (≤ 50 µs); entre 100 e 250 µs, interpolado (E). Contado como CPU ativa: clocks ligados, sem executar. O máximo (16,4 µs) só entra nos prazos, não no consumo | a média medida na IRQ de wrap a 100 µs de período (`u_thingy_bus64k.log`, M): 2,7 µs (máximo 24,4 µs, que só entra nos prazos); sem RRAM, é clock e regulador | M, E entre pontos |
-| CPU por drenagem | acordar (acima) + 5 µs de trabalho (ler o head, entregar, armar) = 20,5 µs com intervalos ≥ 250 µs; mais a espera de assentamento (`XFER_SETTLE_US` = bytes × 8 / SCK + 4 µs: 15 µs para 11 B, 21 µs para 17 B) quando chegam até 4 amostras por drenagem | 2,7 + 8 µs, mais os mesmos 15 µs de assentamento | E, ordem de grandeza de bancada |
+| Acordar de idle (IRQ ou `k_sleep`) | proxy: a média medida da latência disparo → ISR de wrap saindo de idle no mesmo intervalo entre eventos (`u_tag_wrap_latency.log`, M), que inclui ≈ 1,1 µs de cadeia DPPI/START/READY: 16,1 µs com intervalos ≥ 500 µs (16,06–16,07 de média, 16,31 de máximo: a RRAM está em power-down, `tIDLE2CPU` 13 µs, D), 15,5 µs a 250 µs, 9,0 µs a 100 µs, 1,2 µs quando o core não chegou a dormir (≤ 50 µs); entre 100 e 250 µs, interpolação linear (E): 12,3 µs a 176 µs, 12,9 µs a 191 µs. Contado como CPU ativa: clocks ligados, sem executar. O máximo (16,4 µs) só entra nos prazos, não no consumo | a média medida na IRQ de wrap a 100 µs de período (`u_thingy_bus64k.log`, M): 2,7 µs (máximo 24,4 µs, que só entra nos prazos); sem RRAM, é clock e regulador | M, E entre pontos |
+| CPU por drenagem | acordar (acima) + 5 µs de trabalho (ler o head, entregar, armar) = 21,1 µs com intervalos ≥ 500 µs (20,5 a 250 µs); mais a espera de assentamento (`XFER_SETTLE_US` = bytes × 8 / SCK + 4 µs: 15 µs para 11 B, 21 µs para 17 B) quando chegam até 4 amostras por drenagem | 2,7 + 8 µs, mais os mesmos 15 µs de assentamento | E, ordem de grandeza de bancada |
 | Período real de drenagem (T real) | T arredondado para cima ao tick de 32 µs mais um tick (`k_sleep`), mais a própria drenagem (o `k_sleep` começa depois do trabalho): 10 ms → 10 048 + 20 = 10 068 µs; 1 ms → 1 056 + 20 = 1 076 µs; 625 µs → 672 + 36 = 708 µs (11 B) ou 714 µs (17 B); 100 µs → 160 + 16 a 32 = 176 a 191 µs | tick de 30,5 µs: 10 ms → 10 040 + 11 = 10 051 µs; 1 ms → 1 038 + 11 = 1 048 µs; 625 µs → 671 + 26 = 697 µs; 100 µs → 153 + 11 = 163 µs | D (kernel), E |
 | CPU por wrap (uma vez por volta do anel, ≥ anel/2 amostras) | acordar (pelo intervalo entre wraps) + 3 µs se a IRQ vem de idle (período ≥ 64 µs); um período + 3 µs se a thread espera acordada e o wrap chega dentro do limite min(T/4, 8 períodos + 8 µs); se o limite expira antes do período (T = 100 µs a 16 k/s: 25 µs < 62,5 µs), o limite + acordar a 62,5 µs (3,1 µs, E) + 3 µs | idem, com 2,7 µs de acordar | E |
 | CPU por amostra, modo drenado | 1 µs de `k_msgq_put` na drenagem + 2,5 µs de `k_msgq_get` e decode no consumidor = 3,5 µs | idem | E |
@@ -84,8 +84,8 @@ Corrente média do SoC em µA (E).
 |---|---|---|---|---|
 | drenado, T = 10 ms (1 600/s) e 1 ms (16 k e 50 k/s) | SPIM22 (8 MHz) | **48** | **288** | **702** |
 | drenado, T = 10 ms, 1 ms | SPIM00 (32 MHz) | 349 | 592 | 1 016 |
-| drenado, T = período (625 µs) e 100 µs (mínimo) | SPIM22 | 174 | 656 | 900 |
-| drenado, T = período, 100 µs | SPIM00 | 474 | 960 | 1 213 |
+| drenado, T = período (625 µs) e 100 µs (mínimo) | SPIM22 | 176 | 675 | 952 |
+| drenado, T = período, 100 µs | SPIM00 | 476 | 979 | 1 265 |
 | por amostra (`APP_PER_SAMPLE_IRQ`) | SPIM22 | 59 | 245 | fora da faixa |
 | por amostra | SPIM00 | 359 | 549 | fora da faixa |
 | qualquer, FLPR | SPIM22 | sem número (E) | sem número (E) | sem número (E) |
@@ -105,17 +105,18 @@ Termos de cada linha (T real: 10 ms → 10 068 µs, 99 drenagens/s; 1 ms →
   50 k/s e T = 1 ms, 53,8 por drenagem, volta de 161, 310 wraps/s, 23 µs
   cada. Com T = 625 / 100 / 100 µs: 12,4, 124 e 378 wraps/s.
 - **CPU, T longo** = 2,6 mA × fração: a 1 600/s e T = 10 ms, 99
-  drenagens × 20,5 µs + 12,4 × 18,5 + 1 600 × 3,5 = 7 900 µs/s = 0,79 % →
+  drenagens × 21,1 µs + 12,4 × 19,1 + 1 600 × 3,5 = 7 960 µs/s = 0,80 % →
   20 µA; a 16 k/s e T = 1 ms, 19 040 + 7 600 + 56 000 = 8,3 % → 215 µA; a
   50 k/s e T = 1 ms, 19 040 + 7 120 + 175 000 = 20,1 % → 523 µA.
-- **CPU, T curto** = a 1 600/s e T = 625 µs, 1 413 drenagens × (20,5 + 15
-  de assentamento, 1,13 amostra por drenagem) + 12,4 × 18,5 + 5 600 =
-  5,6 % → 146 µA; a 16 k/s e T = 100 µs (191 µs reais), 5 222 × (11,5 de
-  acordar a esse intervalo + 5 + 15, 3,06 por drenagem) + 124 × 31,1
-  (espera de 25 µs que expira + acordar + 3) + 56 000 = 22,4 % → 583 µA; a
-  50 k/s e T = 100 µs (176 µs reais), 5 666 × 16,5 (8,8 por drenagem: sem
-  assentamento) + 378 × 23 + 175 000 = 27,7 % → 720 µA. As 5 222 a 5 666
-  drenagens/s custam 4,7 a 6 % de CPU só em acordar.
+- **CPU, T curto** = a 1 600/s e T = 625 µs, 1 413 drenagens × (21,1 + 15
+  de assentamento, 1,13 amostra por drenagem) + 12,4 × 19,1 + 5 600 =
+  5,7 % → 148 µA; a 16 k/s e T = 100 µs (191 µs reais), 5 222 × (12,9 de
+  acordar interpolado a esse intervalo + 5 + 15, 3,06 por drenagem) + 124 ×
+  31,1 (espera de 25 µs que expira + acordar + 3) + 56 000 = 23,2 % →
+  602 µA; a 50 k/s e T = 100 µs (176 µs reais), 5 666 × 20,0 (12,3 de
+  acordar interpolado + 7,7, sem assentamento) + 378 × 23 + 175 000 =
+  29,7 % → 772 µA. As 5 222 a 5 666 drenagens/s custam 6,7 a 6,9 % de CPU
+  só em acordar.
 - **CPU, por amostra** = a 1 600/s, 7,5 µs × 1 600 = 1,2 % → 31 µA; a
   16 k/s, 4,1 µs × 16 000 = 6,6 % → 172 µA. A 50 k/s o modo não vale: 20 µs
   de período contra 12,5 de transação mais 15,5 de entrada máxima da ISR
@@ -130,13 +131,13 @@ Termos de cada linha (T real: 10 ms → 10 068 µs, 99 drenagens/s; 1 ms →
   latência; a 50 k/s, 9. A 50 k/s a espera acordada cobre o wrap (20 µs de
   período dentro do limite de 25 µs); a 16 k/s o limite min(T/4, 8
   períodos + 8 µs) = 25 µs é menor que o período de 62,5 µs, a espera
-  expira e a IRQ de wrap vem de idle, sem prejuízo (a latência de ≤ 16,4 µs
+  expira e a IRQ de wrap vem de idle, sem prejuízo (a latência de ≤ 16,3 µs
   cabe nos 62,5 µs). Se o Kconfig deixasse T = 62,5 µs a 16 k/s (124 µs
   reais, 8 052 drenagens/s), o modelo daria 816 µA na SPIM22 (E): a essa
   altura o modo por amostra (245 µA) é o caminho.
 - **Modo por amostra contra T = período**: com as entradas médias medidas,
   o modo por amostra custa menos que o drenado com T = período em toda a
-  faixa em que vale (59 contra 174 µA a 1 600/s; 245 contra 656 a
+  faixa em que vale (59 contra 176 µA a 1 600/s; 245 contra 675 a
   16 k/s), e a 16 k/s custa até menos que T = 1 ms (245 contra 288),
   porque cada amostra paga 4,1 µs contra 3,5 µs mais a parte da drenagem e
   do wrap. Contra o T longo custa 1,2× a 1 600/s. O que limita o modo por
@@ -148,9 +149,9 @@ Termos de cada linha (T real: 10 ms → 10 068 µs, 99 drenagens/s; 1 ms →
 
 Três leituras:
 
-1. **T curto custa 3,6× (1,6 k/s), 2,3× (16 k/s) e 1,3× (50 k/s) o T
-   longo** (174 contra 48 µA; 656 contra 288; 900 contra 702). A
-   diferença é o número de drenagens, ~20 µs de CPU cada, 15,5 dos quais
+1. **T curto custa 3,6× (1,6 k/s), 2,3× (16 k/s) e 1,4× (50 k/s) o T
+   longo** (176 contra 48 µA; 675 contra 288; 952 contra 702). A
+   diferença é o número de drenagens, ~21 µs de CPU cada, 16,1 dos quais
    são a RRAM acordando, mais 15 µs de assentamento quando chega uma
    amostra só; o custo por amostra é o mesmo. O modo por amostra fica
    perto do T longo a 1 600/s (59 contra 48 µA) e abaixo dele a 16 k/s
@@ -191,7 +192,9 @@ Os testes da Thingy a 400 Hz rodaram a 4 MHz (default do Kconfig; transação
 de 23,5 µs); os benches de 64 k e por amostra rodaram a 8 MHz
 (`bench/bus-64k-thingy.conf`, `bench/per-sample-thingy.conf`). O modo por
 amostra no nRF5340 foi medido limpo até 40 µs de período (25 k/s) pelo
-critério da latência (M): a −1,5 % de amostras novas a 50 µs é o bit de
+critério da latência (M; a 40 µs com −5 % de novas sem contraparte
+drenada, atribuição em aberto; limpo sem ressalva até 50 µs, 20 k/s): a
+−1,7 % de amostras novas a 50 µs é o bit de
 data-ready do sensor nesse espaçamento, igual ao modo drenado (366/s nos
 dois). A fórmula (12,5 de transação + 26,3 de entrada máxima + 2 µs ≈ 41
 µs) dá 24 k/s; a partir de 30 µs a latência mínima cai abaixo da
@@ -226,15 +229,15 @@ FLPR o custo de idle do VPR não tem número (ver premissas).
 |---|---|---|---|
 | nRF5340 SPIM4, 8 MHz | ≈ 2,2 mA | ≈ 2,4 mA | 1,5 + 48 + 1,7 mA × 80 % + 3,3 mA × 24,3 % |
 | nRF5340 SPIM4, 16 MHz | ≈ 1,7 mA | ≈ 1,9 mA | idem com 1,9 mA × 45 % |
-| nRF54L15 SPIM22, 8 MHz | ≈ 0,88 mA | ≈ 1,07 mA | 2,9 + 20 + 0,25 mA × 80 % + 2,6 mA × 25,2 % (654 µA) |
-| nRF54L15 SPIM00, 32 MHz | ≈ 1,20 mA | ≈ 1,39 mA | 2,9 + 20 + 300 + 0,8 mA × 27 % + 654 |
+| nRF54L15 SPIM22, 8 MHz | ≈ 0,88 mA | ≈ 1,12 mA | 2,9 + 20 + 0,25 mA × 80 % + 2,6 mA × 25,2 % (654 µA) |
+| nRF54L15 SPIM00, 32 MHz | ≈ 1,20 mA | ≈ 1,44 mA | 2,9 + 20 + 300 + 0,8 mA × 27 % + 654 |
 
 A 64 k/s com T = 1 ms (1 076 µs reais) chegam 68,9 amostras por drenagem:
-929 drenagens × 20,5 µs, 464 wraps/s com espera acordada (um período,
-15,6 µs, + 3) e 64 000 × 3,5 µs dão 25,2 % de CPU no nRF54L15, dominados
+929 drenagens × 21,1 µs, 464 wraps/s com espera acordada (um período,
+15,6 µs, + 3) e 64 000 × 3,5 µs dão 25,3 % de CPU no nRF54L15, dominados
 pelos 3,5 µs por amostra (22,4 %). Com T = 100 µs (176 µs reais, ≈ 11
-amostras de latência) as 5 666 drenagens custam 9,3 % sozinhas: 32,6 % de
-CPU, 848 µA. O modo por amostra não serve (15,6 µs de período contra 12,5
+amostras de latência) as 5 666 drenagens custam 11,3 % sozinhas (19,9 µs
+cada, 12,3 de acordar interpolados): 34,6 % de CPU, 900 µA. O modo por amostra não serve (15,6 µs de período contra 12,5
 de transação mais 15,5 ou 26 µs de entrada máxima mais a cópia). No
 nRF54L15 a SPIM2x atende 64 k/s com 11 B a 80 % do barramento, sem margem;
 a SPIM00 a 27 % dá margem. A errata 8 não se aplica ao ADXL382 (primeiro

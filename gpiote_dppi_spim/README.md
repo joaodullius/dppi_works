@@ -71,7 +71,7 @@ Ferramentas:
 | `APP_SENSOR_ADXL362` / `APP_SENSOR_BMI270` | pelo devicetree (`dt_compat_enabled`) | backend do sensor (`src/sensor_*.c`) |
 | `APP_SENSOR_ODR_HZ` | 400 | ODR do sensor, que é também a taxa de transações (ADXL362 até 400 Hz, BMI270 até 1600 Hz) |
 | `APP_PER_SAMPLE_IRQ` | n | modo por amostra: um buffer e a IRQ de `END` copia cada amostra para a fila. Uma interrupção por amostra (≈ 1,2 µs de ISR acordado; entrada de até 15,5 µs saindo de idle no M33 do nRF54L15, até 26,3 µs no nRF5340, M); vale enquanto o período for maior que a transação mais essa entrada mais a cópia (≈ 36 µs na TAG, ≈ 41 µs na Thingy:53; medido limpo até 40 µs nos dois). Um `START` durante a cópia é detectado (`torn`); um antes de a ISR entrar não. Com ele, os três símbolos seguintes não têm efeito |
-| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s). O período real é T arredondado ao tick do kernel mais um tick (32 µs) mais a drenagem; latência de entrega ≤ esse T real em taxa baixa (até 4 slots pendentes por drenagem), e até 2 × T real para a amostra mais nova de cada drenagem em taxa alta; 1/T acordares por segundo mais uma IRQ de wrap por volta do anel |
+| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s). O período real é T arredondado ao tick do kernel mais um tick (32 µs) mais a drenagem; latência de entrega ≤ T real quando chegam até 4 amostras por drenagem (a drenagem espera um tempo de transação e entrega também a mais nova); acima disso a mais nova de cada drenagem sai na drenagem seguinte: T real + um período de amostra (≈ 10,7 ms a 1 600 Hz com T = 10 ms); 1/T acordares por segundo mais uma IRQ de wrap por volta do anel |
 | `APP_RING_SLOTS` | 256 | slots do anel (8 a 4096); mais 8 slots de guarda fixos. O wrap é armado quando o head passa da metade, então o anel deve caber duas drenagens de amostras (≥ 2 × taxa × T real). A guarda só acusa o estouro (`ovf`); além dela a RAM corrompe |
 | `APP_WRAP_AWAKE_BELOW_US` | 64 | com amostras mais próximas que isso, a thread espera o wrap acordada (no máximo min(T/4, 8 períodos + 8 µs)) em vez de deixar a IRQ vir de idle; 0 desliga |
 | `APP_QUEUE_DEPTH` | 256 | profundidade da `k_msgq` em amostras (pelo menos uma drenagem mais o atraso do consumidor) |
@@ -136,8 +136,8 @@ conexão DPPI, e em seguida um relatório por segundo (TAG, BMI270 a
 <inf> bmi270: ACC_CONF 0xAC (+/-2 g, ODR 1600 Hz)
 <inf> spim_dppi: trigger: BMI270 data-ready on pin 36, rising edge -> GPIOTE IN event
 <inf> spim_dppi: DPPI connected, burst 17 bytes, ring 256 slots, drain every 10000 us, wrap on DMA.RX.READY
-<inf> app: t=3000 ms xfers=4833 queued=1609 fresh=1609 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.46 max=0.71 m/s^2
-<inf> app: t=4000 ms xfers=6441 queued=1608 fresh=1608 dropped=0 late=0 ovf=0 torn=0 Z avg=0.60 min=0.50 max=0.72 m/s^2
+<inf> app: t=3000 ms xfers=4832 queued=1608 fresh=1608 dropped=0 late=0 ovf=0 torn=0 Z avg=0.60 min=0.50 max=0.69 m/s^2
+<inf> app: t=4000 ms xfers=6441 queued=1608 fresh=1608 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.47 max=0.70 m/s^2
 ```
 
 No modo por amostra o banner diz `one interrupt per sample` e a conexão
@@ -188,9 +188,9 @@ Imagens (saída do build): TAG M33 50 208 B de flash no modo drenado e
 a 1600 Hz chegam 16 amostras por drenagem, o wrap acontece a cada 8
 drenagens (volta de 128 slots) e a CPU atende 112 interrupções por
 segundo. Como chegam mais de 4 por drenagem, a amostra mais nova de cada
-drenagem só sai na seguinte: latência de até 2 × T real (≈ 20 ms) para
-essa e até um T real (≈ 10,07 ms: T arredondado ao tick de 32 µs mais um
-tick, mais a drenagem) para as outras. Para latência de uma amostra sem
+drenagem só sai na seguinte: latência de T real + um período de amostra
+(≈ 10,7 ms) para essa e até um T real (≈ 10,07 ms: T arredondado ao tick
+de 32 µs mais um tick, mais a drenagem) para as outras. Para latência de uma amostra sem
 prazo duro, `APP_DRAIN_PERIOD_US=625` (≈ 710 µs reais, 1 amostra por
 drenagem, entregue na própria drenagem depois da espera de assentamento;
 não medido em separado, o mecanismo é o mesmo); para latência de uma ISR,
@@ -201,8 +201,10 @@ Acima do ODR dos sensores disponíveis o limite deste caminho é o barramento,
 não o disparo. Os tetos foram medidos com o exemplo de TIMER, porque nenhum
 sensor da bancada gera data-ready além de 1600 Hz: 52,6 k/s na TAG com
 17 bytes e 71,4 k/s na Thingy:53 com 11 bytes, com `late = 0` e `ovf = 0`;
-o modo por amostra foi medido limpo até 25 k/s nos dois SoCs (marginal de
-33 a 40 k/s na TAG; cópias atropeladas a partir de 33 k/s na Thingy; ver
+o modo por amostra foi medido limpo até 25 k/s na TAG (marginal de 33 a
+40 k/s) e até 20 k/s na Thingy sem ressalva, 25 k/s com a ressalva de
+−5 % de amostras novas de atribuição em aberto (cópias atropeladas a
+partir de 33 k/s; ver
 [`timer_dppi_spim`](../timer_dppi_spim/README.md)). O caso do ADXL382
 a 64 kHz, não testado, está no [README da raiz](../README.md).
 
@@ -308,7 +310,7 @@ a 64 kHz, não testado, está no [README da raiz](../README.md).
    no head lido logo após a limpeza do evento, nunca depois, e `late` é o
    limite superior das amostras perdidas assim.
 9. **O wake-up do core de idle é maior que um período nas taxas altas**,
-   nos dois SoCs (até 16,4 µs no M33 do nRF54L15 pela RRAM; até 24,4 µs
+   nos dois SoCs (até 16,3 µs no M33 do nRF54L15 pela RRAM; até 24,4 µs
    na IRQ de wrap e 26,3 µs na ISR de `END` no nRF5340, com médias abaixo
    de 3 µs, M, ver os Achados do `timer_dppi_spim`). Por isso a drenagem espera o wrap acordada quando
    as amostras estão mais próximas que `APP_WRAP_AWAKE_BELOW_US` (64 µs).
