@@ -1,6 +1,6 @@
 /*
  * BMI270 backend (nRF54L15 TAG, SPI). SPI protocol: read = (reg | 0x80), then
- * one dummy byte, then data; write = reg, data. The sensor needs its ~8 KB
+ * one dummy byte, then data; write = reg, data. The sensor needs a config
  * configuration file uploaded after every power-on before it measures.
  * Register map and config blob from the Zephyr bmi270 driver (Apache-2.0).
  */
@@ -106,7 +106,7 @@ static int upload_config(void)
 		if (err) {
 			return err;
 		}
-		err = reg_write_burst(REG_INIT_DATA, &cfg[index], CONFIG_CHUNK);
+		err = reg_write_burst(REG_INIT_DATA, &cfg[index], MIN(CONFIG_CHUNK, cfg_len - index));
 		if (err) {
 			return err;
 		}

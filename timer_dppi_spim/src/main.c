@@ -105,6 +105,7 @@ static void run_sweep(const char *list)
 
 		uint32_t x0 = spim_dppi_total_xfers(), q = 0, f = 0, t0 = spim_dppi_torn();
 		uint32_t s0 = spim_dppi_skipped(), d0 = spim_dppi_dropped(), l0 = spim_dppi_late_wraps();
+		uint32_t o0 = spim_dppi_overflows();
 		uint8_t raw[SENSOR_BURST_LEN];
 		struct sensor_sample s;
 		int64_t end = k_uptime_get() + (CONFIG_APP_SWEEP_STEP_S - 1) * 1000;
@@ -121,7 +122,7 @@ static void run_sweep(const char *list)
 		LOG_INF("=== sweep result: period %u us: xfers/s=%u queued/s=%u fresh/s=%u.%u skipped=%u dropped=%u late_wraps=%u overflows=%u torn=%u",
 			period, (spim_dppi_total_xfers() - x0) / secs, q / secs, f / secs,
 			(f * 10 / secs) % 10, spim_dppi_skipped() - s0, spim_dppi_dropped() - d0,
-			spim_dppi_late_wraps() - l0, spim_dppi_overflows(), spim_dppi_torn() - t0);
+			spim_dppi_late_wraps() - l0, spim_dppi_overflows() - o0, spim_dppi_torn() - t0);
 #if defined(CONFIG_APP_WRAP_LATENCY_STATS)
 		uint32_t mn, av, mx;
 

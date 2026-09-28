@@ -73,10 +73,9 @@ config APP_WRAP_AWAKE_BELOW_US
 	  When the wrap is due and the recent samples were closer together than
 	  this, the drain thread stays awake until the wrap ISR has run (at most
 	  a quarter of the drain period or 8 sample periods) instead of going
-	  back to sleep. Waking the core from idle for that IRQ costs ~17 us
-	  on the nRF54L15 (RRAM), more than one sample period at high rates,
-	  and the nRF5340 also missed periods of 14-25 us that way. 0 disables
-	  the wait.
+	  back to sleep. Waking the core from idle for that IRQ costs up to
+	  ~16.5 us on the nRF54L15 (RRAM) and ~24 us on the nRF5340, more than
+	  one sample period at high rates. 0 disables the wait.
 
 config APP_QUEUE_DEPTH
 	int "Message queue depth in samples"

@@ -129,9 +129,10 @@ static void spim_evt_handler(nrfx_spim_event_t const *p_event, void *p_context)
  * at slot k+1. Point it at slot 0 instead, so transaction k+1 writes slot 0.
  * If a START sneaks in between the clear and the write, transaction k+1 had
  * already latched slot k+1 (in the ring or in the guard) and slot 0 goes to
- * k+2. That slot is not delivered (the ISR cannot tell whether the START
- * came before or after its head read), so a late wrap costs one sample and
- * is counted; it never delivers stale data.
+ * k+2. wrap_last = h-1 with h read after the clear: if the START came before
+ * that read, slot k+1 is delivered; if after, it is skipped (one sample
+ * lost). Stale data is never delivered. late_wraps counts both cases, so it
+ * is an upper bound of the samples lost this way.
  */
 static void wrap_isr(void)
 {
@@ -195,7 +196,7 @@ static void overflow_check(uint32_t h)
  * One buffer, no ring, no wrap: the END ISR copies the burst into the queue
  * before the next transaction overwrites it. That holds while the sample
  * period exceeds the transaction time plus the ISR latency (~17 us from
- * idle on the nRF54L15 M33, 14-25 us on the nRF5340) plus the copy. A START
+ * idle on the nRF54L15 M33, ~26 us on the nRF5340) plus the copy. A START
  * during the copy is detected (READY event set after being cleared) and the
  * sample is dropped as torn; a START before the ISR entry looks like the
  * normal one and cannot be told apart, so above that rate the data may be
@@ -236,16 +237,31 @@ static void sample_isr(void)
 #define XFER_SETTLE_US (SENSOR_BURST_LEN * 8 * 1000000UL / CONFIG_APP_SPI_FREQ_HZ + 4)
 #define SETTLE_MAX_PENDING 4
 
-/* True if no transaction started during one transaction time: slot h-1 ended */
-static bool settled(uint32_t h)
+/* Slots certainly complete after waiting one transaction time: h if no new
+ * transaction started meanwhile (slot h-1 ended), else all below the newest */
+static uint32_t settled(uint32_t h)
+{
+	uint32_t h2;
+
+	k_busy_wait(XFER_SETTLE_US);
+	h2 = head_index();
+	return h2 == h ? h : h2 - 1;
+}
+
+/* After a wrap with head still 0: wait one transaction time, after which the
+ * old lap's last slot has certainly ended; returns the head read then */
+static uint32_t head_settled_new_lap(void)
 {
 	k_busy_wait(XFER_SETTLE_US);
-	return head_index() == h;
+	return head_index();
 }
+
+static uint32_t last_drain_cyc;    /* k_cycle time of the previous drain */
 
 static void drain(void)
 {
 	uint32_t h = head_index();
+	uint32_t now = k_cycle_get_32();
 	uint32_t arrived = 0;
 	uint32_t upto;
 
@@ -254,35 +270,31 @@ static void drain(void)
 		uint32_t last = wrap_last;
 
 		/* Everything up to and including wrap_last is complete once the new
-		 * lap has started (h >= 1) or the old last has settled */
-		if (h >= 1 || settled(0)) {
-			deliver(tail, last + 1);
-			lap_base += last + 1;
-			tail = 0;
-			wrap_done = false;
-			h = head_index();
-		} else {
-			deliver(tail, last);
-			tail = last;
-			return;
+		 * lap has started (h >= 1) or one transaction time has passed */
+		if (h == 0) {
+			h = head_settled_new_lap();
 		}
+		deliver(tail, last + 1);
+		lap_base += last + 1;
+		tail = 0;
+		wrap_done = false;
 	}
 	upto = h ? h - 1 : 0;
-	if (h >= 1 && h - tail <= SETTLE_MAX_PENDING && settled(h)) {
-		upto = h;
+	if (h >= 1 && h - tail <= SETTLE_MAX_PENDING) {
+		upto = settled(h);
 	}
 	if (upto > tail) {
 		arrived = upto - tail;
 		deliver(tail, upto);
 		tail = upto;
 	}
-	if (arm_wrap(h) && arrived > 0 && CONFIG_APP_WRAP_AWAKE_BELOW_US > 0) {
+	if (arm_wrap(h) && arrived > 0 && CONFIG_APP_WRAP_AWAKE_BELOW_US > 0 && now != last_drain_cyc) {
 		/* The wrap must land before the START that follows the next READY.
-		 * Waking the core from idle for that IRQ costs ~17 us on the
-		 * nRF54L15 M33 (RRAM) and more than 14-25 us on the nRF5340: when
-		 * the samples are closer than that, stay awake for it instead. At
-		 * low rates the IRQ path is used and the core sleeps. */
-		uint32_t period_us = CONFIG_APP_DRAIN_PERIOD_US / arrived;
+		 * Waking the core from idle for that IRQ costs up to ~16.5 us on
+		 * the nRF54L15 M33 (RRAM) and ~24 us on the nRF5340: when the
+		 * samples are closer than that, stay awake for it instead. At low
+		 * rates the IRQ path is used and the core sleeps. */
+		uint32_t period_us = k_cyc_to_us_floor32(now - last_drain_cyc) / arrived;
 
 		if (period_us < CONFIG_APP_WRAP_AWAKE_BELOW_US) {
 			uint32_t limit_us = MIN(CONFIG_APP_DRAIN_PERIOD_US / 4, 8 * period_us + 8);
@@ -293,6 +305,7 @@ static void drain(void)
 			}
 		}
 	}
+	last_drain_cyc = now;
 }
 
 static void drain_thread(void *a, void *b, void *c)

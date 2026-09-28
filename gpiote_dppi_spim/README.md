@@ -70,8 +70,8 @@ Ferramentas:
 |---|---|---|
 | `APP_SENSOR_ADXL362` / `APP_SENSOR_BMI270` | pelo devicetree (`dt_compat_enabled`) | backend do sensor (`src/sensor_*.c`) |
 | `APP_SENSOR_ODR_HZ` | 400 | ODR do sensor, que é também a taxa de transações (ADXL362 até 400 Hz, BMI270 até 1600 Hz) |
-| `APP_PER_SAMPLE_IRQ` | n | modo por amostra: um buffer e a IRQ de `END` copia cada amostra para a fila. Uma interrupção por amostra (≈ 1,2 µs de ISR acordado, até 16,5 µs saindo de idle no M33 do nRF54L15, até 23 µs no nRF5340); vale enquanto o período for maior que a transação mais essa latência mais a cópia. Um `START` durante a cópia é detectado (`torn`); um antes de a ISR entrar não. Com ele, os três símbolos seguintes não têm efeito |
-| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s). O período real é T arredondado ao tick do kernel mais um tick (32 µs) mais a drenagem; latência de entrega ≤ esse T real em taxa baixa; 1/T acordares por segundo mais uma IRQ de wrap por volta do anel |
+| `APP_PER_SAMPLE_IRQ` | n | modo por amostra: um buffer e a IRQ de `END` copia cada amostra para a fila. Uma interrupção por amostra (≈ 1,2 µs de ISR acordado; entrada de até 15,5 µs saindo de idle no M33 do nRF54L15, até 26,3 µs no nRF5340, M); vale enquanto o período for maior que a transação mais essa entrada mais a cópia (≈ 36 µs na TAG, ≈ 41 µs na Thingy:53; medido limpo até 40 µs nos dois). Um `START` durante a cópia é detectado (`torn`); um antes de a ISR entrar não. Com ele, os três símbolos seguintes não têm efeito |
+| `APP_DRAIN_PERIOD_US` | 10000 | T, período de drenagem (100 µs a 1 s). O período real é T arredondado ao tick do kernel mais um tick (32 µs) mais a drenagem; latência de entrega ≤ esse T real em taxa baixa (até 4 slots pendentes por drenagem), e até 2 × T real para a amostra mais nova de cada drenagem em taxa alta; 1/T acordares por segundo mais uma IRQ de wrap por volta do anel |
 | `APP_RING_SLOTS` | 256 | slots do anel (8 a 4096); mais 8 slots de guarda fixos. O wrap é armado quando o head passa da metade, então o anel deve caber duas drenagens de amostras (≥ 2 × taxa × T real). A guarda só acusa o estouro (`ovf`); além dela a RAM corrompe |
 | `APP_WRAP_AWAKE_BELOW_US` | 64 | com amostras mais próximas que isso, a thread espera o wrap acordada (no máximo min(T/4, 8 períodos + 8 µs)) em vez de deixar a IRQ vir de idle; 0 desliga |
 | `APP_QUEUE_DEPTH` | 256 | profundidade da `k_msgq` em amostras (pelo menos uma drenagem mais o atraso do consumidor) |
@@ -134,9 +134,10 @@ conexão DPPI, e em seguida um relatório por segundo (TAG, BMI270 a
 <inf> spim_dppi: SPIM @0x500c8000, hardware CSN on pin 39, 8000000 Hz, CSNDUR 2, RXDELAY 1
 <inf> bmi270: config upload: 328 bytes in 11 chunks, 23 ms; INIT_ADDR readback 0x0A00
 <inf> bmi270: ACC_CONF 0xAC (+/-2 g, ODR 1600 Hz)
+<inf> spim_dppi: trigger: BMI270 data-ready on pin 36, rising edge -> GPIOTE IN event
 <inf> spim_dppi: DPPI connected, burst 17 bytes, ring 256 slots, drain every 10000 us, wrap on DMA.RX.READY
-<inf> app: t=3000 ms xfers=4832 queued=1608 fresh=1608 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.49 max=0.72 m/s^2
-<inf> app: t=4000 ms xfers=6441 queued=1609 fresh=1609 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.45 max=0.71 m/s^2
+<inf> app: t=3000 ms xfers=4833 queued=1609 fresh=1609 dropped=0 late=0 ovf=0 torn=0 Z avg=0.59 min=0.46 max=0.71 m/s^2
+<inf> app: t=4000 ms xfers=6441 queued=1608 fresh=1608 dropped=0 late=0 ovf=0 torn=0 Z avg=0.60 min=0.50 max=0.72 m/s^2
 ```
 
 No modo por amostra o banner diz `one interrupt per sample` e a conexão
@@ -153,9 +154,11 @@ consumidor, iguais quando `dropped = 0`. Um teste bem sucedido tem
 `queued = fresh`, `dropped = 0`, `late = 0`, `ovf = 0` e `torn = 0`.
 `dropped` conta amostras que não couberam na fila. `late` é o contador
 `late_wraps`: wraps em que um `START` entrou entre a limpeza do evento e a
-escrita do ponteiro; aquela transação usou o slot seguinte ao último, que
-não é entregue (a ISR não sabe se o `START` veio antes ou depois de ler o
-head): uma amostra perdida por wrap tardio, nunca dado antigo na fila.
+escrita do ponteiro; aquela transação usou o slot seguinte ao último. A
+ISR fecha a volta no head lido logo após a limpeza, então esse slot é
+entregue se o `START` veio antes da leitura e pulado se veio depois:
+`late` é o limite superior das amostras perdidas por wrap tardio, e nunca
+entra dado antigo na fila.
 `ovf` é `overflows`: voltas em que o EasyDMA chegou aos 8 slots de guarda
 antes do wrap (T longo demais para `APP_RING_SLOTS`; além da guarda a RAM
 corrompe sem aviso). `torn` (modo por amostra) conta amostras cuja cópia
@@ -173,21 +176,24 @@ amostra com fila de 256. Todos com `dropped = 0`, `late = 0`, `ovf = 0` e
 
 | Alvo | ODR | Modo | Transações/s (= amostras/s) | Log |
 |---|---|---|---|---|
-| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 372/s) | drenado | 371–373/s, queued = fresh | `u_thingy_int_drain10ms.log` |
-| Thingy:53 M33 (ADXL362) | 400 Hz | por amostra | 372/s, queued = fresh | `u_thingy_int_persample.log` |
+| Thingy:53 M33 (ADXL362) | 400 Hz (máximo do sensor; real ≈ 372/s) | drenado | 372–374/s (371–375 nas janelas), queued = fresh | `u_thingy_int_drain10ms.log` |
+| Thingy:53 M33 (ADXL362) | 400 Hz | por amostra | 372–374/s, queued = fresh | `u_thingy_int_persample.log` |
 | TAG M33 (BMI270) | **1600 Hz (máximo do sensor)** | drenado | **1608–1609/s, queued = fresh, 0 perdas** | `u_tag_int_drain10ms_1600.log` |
-| TAG M33 (BMI270) | 1600 Hz | por amostra | **1607–1608/s, queued = fresh, 0 perdas** | `u_tag_int_persample_1600.log` |
-| TAG FLPR (BMI270) | **1600 Hz** | drenado | **≈ 1607/s**: `xfers` avança 1613–1614 por relatório, mas os relatórios saem a cada ≈ 1004 ms (1,102 → 2,106 → 3,110 s no log), e `queued` alterna 1607/1621 pela mesma janela | `u_tag_flpr_int_drain10ms_1600.log` |
-| TAG FLPR (BMI270) | 1600 Hz | por amostra | **1607–1608/s, queued = fresh, 0 perdas** | `u_tag_flpr_int_persample_1600.log` |
+| TAG M33 (BMI270) | 1600 Hz | por amostra | **1607–1609/s, queued = fresh, 0 perdas** | `u_tag_int_persample_1600.log` |
+| TAG FLPR (BMI270) | **1600 Hz** | drenado | **≈ 1607/s**: `xfers` avança 1614 por relatório, mas os relatórios saem a cada ≈ 1004 ms (1,103 → 2,107 → 3,111 s no log), e `queued` alterna 1606–1607 / 1621–1622 pela mesma janela | `u_tag_flpr_int_drain10ms_1600.log` |
+| TAG FLPR (BMI270) | 1600 Hz | por amostra | **1607–1610/s, queued = fresh, 0 perdas** | `u_tag_flpr_int_persample_1600.log` |
 
 Imagens (saída do build): TAG M33 50 208 B de flash no modo drenado e
 49 696 B no modo por amostra; TAG FLPR 29 292 B, tudo em RAM. Com T = 10 ms
 a 1600 Hz chegam 16 amostras por drenagem, o wrap acontece a cada 8
 drenagens (volta de 128 slots) e a CPU atende 112 interrupções por
-segundo; a latência de entrega é até o T real, ≈ 10,05 ms (T arredondado
-ao tick de 32 µs mais um tick, mais a drenagem). Para latência de uma
-amostra sem prazo duro, `APP_DRAIN_PERIOD_US=625` (672 µs reais; não
-medido em separado, o mecanismo é o mesmo); para latência de uma ISR,
+segundo. Como chegam mais de 4 por drenagem, a amostra mais nova de cada
+drenagem só sai na seguinte: latência de até 2 × T real (≈ 20 ms) para
+essa e até um T real (≈ 10,07 ms: T arredondado ao tick de 32 µs mais um
+tick, mais a drenagem) para as outras. Para latência de uma amostra sem
+prazo duro, `APP_DRAIN_PERIOD_US=625` (≈ 710 µs reais, 1 amostra por
+drenagem, entregue na própria drenagem depois da espera de assentamento;
+não medido em separado, o mecanismo é o mesmo); para latência de uma ISR,
 `APP_PER_SAMPLE_IRQ=y` (medido acima). O custo de CPU de cada opção está modelado em
 [`docs/POWER.md`](../docs/POWER.md).
 
@@ -195,8 +201,8 @@ Acima do ODR dos sensores disponíveis o limite deste caminho é o barramento,
 não o disparo. Os tetos foram medidos com o exemplo de TIMER, porque nenhum
 sensor da bancada gera data-ready além de 1600 Hz: 52,6 k/s na TAG com
 17 bytes e 71,4 k/s na Thingy:53 com 11 bytes, com `late = 0` e `ovf = 0`;
-o modo por amostra foi medido limpo até 25 k/s na TAG (falso limpo de 33 a
-40 k/s) e 10 k/s na Thingy (ver
+o modo por amostra foi medido limpo até 25 k/s nos dois SoCs (marginal de
+33 a 40 k/s na TAG; cópias atropeladas a partir de 33 k/s na Thingy; ver
 [`timer_dppi_spim`](../timer_dppi_spim/README.md)). O caso do ADXL382
 a 64 kHz, não testado, está no [README da raiz](../README.md).
 
@@ -222,15 +228,20 @@ a 64 kHz, não testado, está no [README da raiz](../README.md).
   cooperativa −1) faz `k_sleep(T)` e chama `drain()`, que lê o head em
   `DMA.RX.PTR` (`RXD.PTR` no nRF5340) e entrega `[tail, head − 1)` à
   fila; com até 4 slots pendentes (`SETTLE_MAX_PENDING`) ela espera um
-  tempo de transação (`XFER_SETTLE_US`, `k_busy_wait`) e, se o head não
-  mudou (`settled()`), entrega também o slot head − 1. Se o head passou de
-  `APP_RING_SLOTS / 2` e não há wrap pendente, habilita a interrupção de
-  `DMA.RX.READY` (`RXSTARTED` na nrfx; `STARTED` no nRF5340).
-  `wrap_isr()` limpa o evento, lê o head, escreve `PTR = ring[0]`,
-  verifica se um `START` entrou no meio (`late_wraps++`; esse slot não é
-  entregue), guarda `wrap_last = head − 1` e desabilita a IRQ; a drenagem
-  seguinte entrega primeiro a volta antiga até `wrap_last`. Se as amostras
-  da drenagem estavam mais próximas que `APP_WRAP_AWAKE_BELOW_US`, a
+  tempo de transação (`XFER_SETTLE_US`, `k_busy_wait`) e entrega o que
+  `settled()` dá como certo: até o head, se ele não mudou, ou até o novo
+  head − 1, se um `START` mais novo apareceu (e por isso o anterior
+  terminou); depois de um wrap com head ainda em 0 faz a mesma espera
+  antes de fechar a volta antiga. Se o head passou de `APP_RING_SLOTS / 2`
+  e não há wrap pendente, habilita a interrupção de `DMA.RX.READY`
+  (`RXSTARTED` na nrfx; `STARTED` no nRF5340). `wrap_isr()` limpa o
+  evento, lê o head, escreve `PTR = ring[0]`, guarda `wrap_last = head −
+  1` e desabilita a IRQ; se um `START` entrou entre a limpeza e a escrita
+  (`READY` reaparece com o head em 0), `late_wraps++`: o slot k + 1 foi
+  entregue se o `START` veio antes da leitura do head, pulado se depois. A
+  drenagem seguinte entrega primeiro a volta antiga até `wrap_last`. Se as
+  amostras da drenagem estavam mais próximas que `APP_WRAP_AWAKE_BELOW_US`
+  (intervalo medido entre drenagens dividido pelas amostras entregues), a
   thread espera o wrap acordada (no máximo min(T/4, 8 períodos + 8 µs)),
   para que a IRQ não pague o wake-up de idle.
   `overflows` conta, uma vez por volta, o head além do anel. Modo por
@@ -293,12 +304,13 @@ a 64 kHz, não testado, está no [README da raiz](../README.md).
    transforma a regra "anel ≥ 2 × taxa × T real" em garantia; depois disso
    `queued = fresh` exato em todas as bancadas (M,
    `timer_dppi_spim/test-logs/`). A mesma revisão apontou que um wrap
-   tardio podia entregar um slot antigo como amostra; agora esse slot é
-   pulado e contado.
+   tardio podia entregar um slot antigo como amostra; agora a volta fecha
+   no head lido logo após a limpeza do evento, nunca depois, e `late` é o
+   limite superior das amostras perdidas assim.
 9. **O wake-up do core de idle é maior que um período nas taxas altas**,
-   nos dois SoCs (≈ 16 µs no M33 do nRF54L15 pela RRAM; ≈ 11 µs na IRQ de
-   wrap e até 23 µs na ISR de `END` no nRF5340, M, ver os Achados do
-   `timer_dppi_spim`). Por isso a drenagem espera o wrap acordada quando
+   nos dois SoCs (até 16,4 µs no M33 do nRF54L15 pela RRAM; até 24,4 µs
+   na IRQ de wrap e 26,3 µs na ISR de `END` no nRF5340, com médias abaixo
+   de 3 µs, M, ver os Achados do `timer_dppi_spim`). Por isso a drenagem espera o wrap acordada quando
    as amostras estão mais próximas que `APP_WRAP_AWAKE_BELOW_US` (64 µs).
    Em taxas baixas, como 1600 Hz com T = 10 ms, a IRQ de wrap vem de idle
    e o core dorme entre drenagens; o acordar da própria drenagem paga a
