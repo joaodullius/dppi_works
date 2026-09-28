@@ -44,13 +44,15 @@ não tem UART; a Thingy é gravada pelo debug de uma DK).
 | `APP_SENSOR_ADXL362` / `APP_SENSOR_BMI270` | pelo devicetree | backend (`src/sensor_*.c`) |
 | `APP_SENSOR_ODR_HZ` | 400 | ODR = taxa de transações (ADXL362 ≤ 400 Hz, BMI270 ≤ 1600 Hz) |
 | `APP_PER_SAMPLE_IRQ` | n | modo por amostra: um buffer, IRQ de `END`, `torn`; os três seguintes sem efeito |
-| `APP_DRAIN_PERIOD_US` | 10000 | T (100 µs a 1 s); T real = ⌈T/tick⌉ · 32 µs + 1 tick + drenagem; latência ≤ T real com ≤ 4 por drenagem, senão + um período para a mais nova |
-| `APP_RING_SLOTS` | 256 | anel (8 a 4096) + 8 de guarda; ≥ 2 × taxa × T real (wrap em anel/2); além da guarda a RAM corrompe |
-| `APP_WRAP_AWAKE_BELOW_US` | 64 | espera o wrap acordada (≤ min(T/4, 8 períodos + 8 µs)) com amostras mais próximas que isso; 0 desliga |
-| `APP_QUEUE_DEPTH` | 256 | `k_msgq` (≥ uma drenagem + atraso do consumidor) |
+| `APP_DRAIN_PERIOD_US` | 10000 | T (100 µs a 1 s); T real e latência: [raiz, Como escolher, passo 3](../README.md#como-escolher) |
+| `APP_RING_SLOTS` | 256 | anel (8 a 4096) + 8 de guarda; regra no passo 3 |
+| `APP_WRAP_AWAKE_BELOW_US` | 64 | espera o wrap acordada com amostras mais próximas que isso; 0 desliga |
+| `APP_QUEUE_DEPTH` | 256 | `k_msgq`; regra no passo 3 |
 | `APP_SPI_FREQ_HZ` | 4 MHz | clock da SPIM (8 MHz na TAG) |
 | `APP_SPI_CSN_DURATION` / `APP_SPI_RX_DELAY` | 2 / −1 | `IFTIMING.CSNDUR` / `RXDELAY` (1 na TAG) |
 | `APP_REPORT_PERIOD_MS` | 1000 | período do relatório |
+
+![Modo por amostra](../docs/por_amostra.svg)
 
 RAM no modo drenado: (`APP_RING_SLOTS` + 8 + `APP_QUEUE_DEPTH`) × rajada =
 8,8 KB (17 B), 5,7 KB (11 B).
@@ -62,6 +64,34 @@ RAM no modo drenado: (`APP_RING_SLOTS` + 8 + `APP_QUEUE_DEPTH`) × rajada =
 Thingy:53: o overlay move o ADXL362 da `spi3` para a `spi4` e acrescenta
 `NRF_PSEL(SPIM_CSN, 0, 22)`; TAG: acrescenta o CSN ao `spi22_default` e
 desliga os outros sensores do barramento.
+
+### Detalhes do engine
+
+O ponteiro do EasyDMA conta transações iniciadas: a drenagem entrega
+`[tail, head − 1)` e, com até 4 pendentes, espera `XFER_SETTLE_US` (≈ 21 µs
+para 17 B, 15 µs para 11 B) e entrega também o slot head − 1. `wrap_done` é
+lido antes do head: um wrap entre as duas leituras fica para a drenagem
+seguinte. A ISR do wrap limpa o evento, lê o head e escreve `PTR = slot 0`;
+um `START` entre a limpeza e a escrita usa o slot k + 1, que é entregue ou
+pulado (`late`), nunca dado antigo. Nas taxas altas a thread espera o wrap
+acordada (`APP_WRAP_AWAKE_BELOW_US`, ≤ min(T/4, 8 períodos + 8 µs) ≈ 520 µs,
+bloqueando as threads preemptíveis). No modo por amostra a ISR de `END`
+copia o buffer e conta `torn` se um `START` chegou durante a cópia.
+
+## Adicionar um sensor
+
+| Peça | O que fazer |
+|---|---|
+| `src/sensor_<x>.c` | `init` (registradores, ODR), `enable_drdy_int` (data-ready no pino), descritor da rajada começando no `STATUS` (`burst_tx`, `fresh_offset`/`fresh_mask`), `decode` (bytes → m/s²) |
+| Overlay | nó do sensor no barramento com `cs-gpios` (CSN por hardware, `NRF_PSEL(SPIM_CSN, …)` no pinctrl) e pino de data-ready; `chosen app,accel` |
+| Kconfig | entrada na `choice APP_SENSOR` |
+| Verificação | `xfers` no ODR, `fresh = queued`, `late = ovf = torn = 0`, Z variando |
+
+| Sensor | Comando | Rajada | `fresh` | Notas |
+|---|---|---|---|---|
+| ADXL362 (M) | `0x0B` + endereço | 11 B: `STATUS`, `FIFO_ENTRIES` L/H, XYZ | `STATUS` bit 0 | Thingy:53, SPIM4 |
+| BMI270 (M) | `0x83` (MSB 1: errata 8 → 8 MHz) | 17 B: dummy, `STATUS`, 8 B AUX, XYZ | `STATUS` bit 7 | *config file* de 328 B, leitura dummy para SPI |
+| ADXL382 (não testado) | `(0x11 << 1) \| 1` = `0x23` | 11 B `STATUS0..ZDATA_L`, big-endian | `STATUS0` bit 0 (`fresh_mask 0x01`) | `DEVID_AD` 0xAD, `OP_MODE` 0x26 com ODR a confirmar, `DATA_READY` no INT0; binding `adi,adxl382.yaml`, overlay `adxl382@0`, `APP_SPI_FREQ_HZ = 16000000` na SPIM4, T = 1 ms; esperar `xfers` ≈ 64 000/s |
 
 ## Compilação e gravação
 
@@ -126,9 +156,7 @@ Imagens (build): TAG M33 50 208 B (drenado) / 49 696 B (por amostra); FLPR
 29 292 B em RAM. A 1600 Hz com T = 10 ms: 16 amostras por drenagem, wrap a
 cada 8 drenagens (volta de 128), 112 IRQ/s; a mais nova de cada drenagem
 sai na seguinte (≈ 10,7 ms), as outras em ≤ ≈ 10,07 ms. Tetos e limite do
-modo por amostra: [`timer_dppi_spim`](../timer_dppi_spim/README.md)
-(52,6 k/s TAG, 71,4 k/s Thingy; por amostra 25 k/s na TAG, 20 k/s na
-Thingy sem ressalva).
+modo por amostra: [`timer_dppi_spim`](../timer_dppi_spim/README.md#resultados).
 
 ## Achados
 
@@ -142,7 +170,7 @@ Thingy sem ressalva).
 - Wrap logo após `STARTED`/`DMA.RX.READY`, nunca após `END`: escrever entre
   `END` e o `START` seguinte colidia com o hardware (MPU/BUS fault a 15 µs).
 - Wrap a cada drenagem deixava a volta nova alcançar a anterior (`queued`
-  > `fresh` em 1–5/s); armar em anel/2 corrigiu.
+  > `fresh` em 1–5/s); armar em anel/2 corrigiu (revisão cega do log).
 - nrfx deixa a IRQ de `STARTED` ligada ao armar o modo repetido (desligar
   todas); EasyDMA só lê RAM (prefixo TX copiado); GPIOTE compartilhado com
   o `gpio_nrfx` (`GPIOTE_NRFX_INST_BY_NODE`, `nrfx_gpiote_channel_alloc`);
@@ -155,5 +183,4 @@ nrfx 4.0: `nrfx_spim` (só no init; depois modo repetido com IRQs
 desligadas), `nrfx_gpiote` (IN sem handler), `nrfx_gppi`, HALs `nrf_spim`
 e `nrf_gpio`. Zephyr: `pinctrl`, `k_msgq`, thread cooperativa de drenagem
 (`k_sleep`, `k_busy_wait`), log por RTT, `gpiote_nrfx.h`. Backends
-`src/sensor_adxl362.c` e `src/sensor_bmi270.c` (init, `enable_drdy_int`,
-descritor da rajada, `decode`).
+`src/sensor_adxl362.c` e `src/sensor_bmi270.c`.

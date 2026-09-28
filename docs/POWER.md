@@ -15,7 +15,8 @@ amostras/s), toda amostra na fila, por drenagem a cada T ou por IRQ `END`
 | SPIM ativa | 0,25 mA SPIM2x (proxy TIMER20 142 µA, TWIM ~250); 0,8 mA SPIM00 | 1,7 mA a 8 Mbps (`ISPIM2`); 1,9 a 16 Mbps (E) | E / D |
 | TIMER + HFXO (caso 2) | 121 (`ITIMER2`) + 34 µA (`ISTBY_X32M_X2`) | 670 (`ITIMER1`) + 135 µA | D |
 | CPU ativa | 2,6 mA (`IAPPCPU0`) | 3,3 mA (`IAPPCPU5`) | D |
-| Acordar de idle | proxy: média da latência disparo → ISR de wrap de idle no mesmo intervalo (`u_tag_wrap_latency.log`, inclui ≈ 1,1 µs de DPPI): 16,1 µs a ≥ 500 µs (máx 16,31: RRAM, `tIDLE2CPU` 13 µs), 15,5 a 250, 9,0 a 100, 1,2 acordado (≤ 50 µs); 12,3–12,9 a 176–191 µs interpolado | 2,7 µs média (máx 24,4, só nos prazos) | M, E |
+| Acordar de idle, M33 nRF54L15 | proxy: média da latência disparo → ISR de wrap de idle no mesmo intervalo (`u_tag_wrap_latency.log`, inclui ≈ 1,1 µs de DPPI): 16,1 µs a ≥ 500 µs (máx 16,31: RRAM, `tIDLE2CPU` 13 µs), 15,5 a 250, 9,0 a 100, 1,2 acordado (≤ 50 µs); 12,3–12,9 a 176–191 µs interpolado | — | M, E |
+| Acordar de idle, nRF5340 | — | 2,7 µs média (`u_thingy_bus64k.log`, 100 µs); máx 24,4 só nos prazos | M |
 | CPU por drenagem | acordar + 5 µs (21,1 a ≥ 500 µs); + assentamento (`XFER_SETTLE_US` 15 µs 11 B, 21 µs 17 B) com ≤ 4 amostras | 2,7 + 8 µs, + 15 de assentamento | E |
 | T real | ⌈T/32 µs⌉ · 32 + 1 tick + drenagem: 10 ms → 10 068 µs; 1 ms → 1 076; 625 µs → 708 (11 B) / 714 (17 B); 100 µs → 176–191 | tick 30,5 µs: 10 051; 1 048; 697; 163 | D, E |
 | CPU por wrap (1 por volta ≥ anel/2) | acordar + 3 µs (IRQ de idle, período ≥ 64 µs); um período + 3 na espera acordada; se o limite min(T/4, 8 períodos + 8 µs) expira (T = 100 µs a 16 k/s: 25 < 62,5), limite + 3,1 + 3 | idem com 2,7 | E |
@@ -145,3 +146,13 @@ data-ready a 16 kHz": ≈ 0,43 mA.
   T = 1 ms) e latência (T real; em taxa alta a mais nova sai na drenagem
   seguinte); além da guarda o EasyDMA corrompe a RAM.
 - Valores D típicos a 3 V, 25 °C, DC/DC; sensor não incluído.
+
+## Símbolos do datasheet
+
+| Símbolo | Significado |
+|---|---|
+| `ION_IDLE`*n* | corrente em System ON idle, por configuração (*n* = 4: *LowLatency* do nRF5340, idle com GPIOTE IN; 7/8: RAM retida; 11: constant latency) |
+| `ITIMER`*n*, `ISPIM`*n* | corrente do TIMER / da SPIM ativa, por instância e clock |
+| `IAPPCPU`*n* | corrente da CPU ativa (0: nRF54L15; 5: nRF5340) |
+| `ISTBY_X32M_X2` | HFXO em standby |
+| `tIDLE2CPU` | tempo de acordar de idle até a CPU (RRAM em power-down) |

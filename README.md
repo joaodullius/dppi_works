@@ -17,8 +17,8 @@ BMI270), Cortex-M33 e FLPR.
 
 Índice: [Visão geral](#visão-geral) · [Exemplos](#exemplos) ·
 [Requisitos](#requisitos) · [Como funciona](#como-funciona) ·
-[Limites medidos](#limites-medidos) · [Como escolher](#como-escolher) ·
-[Consumo](#consumo) · [Qual SPIM](#nrf54l15-spim22-spim00-spim30) ·
+[Como escolher](#como-escolher) · [Limites medidos](#limites-medidos) ·
+[Consumo](#consumo) ·
 [Medido × estimado](#o-que-está-medido-e-o-que-é-estimado) ·
 [Achados](#achados) · [Glossário](#glossário) · [Referências](#referências)
 
@@ -53,7 +53,8 @@ Academy, DevZone).
 
 Mesmo engine (`src/spim_dppi.c`), backends e overlays nos dois; o do TIMER
 tem a mais o filtro de repetidas, o HFXO, a captura de latência e as opções
-de bancada.
+de bancada. Sensor novo: [Adicionar um
+sensor](gpiote_dppi_spim/README.md#adicionar-um-sensor).
 
 ## Requisitos
 
@@ -74,18 +75,12 @@ de bancada.
 | Taxa de transações | o ODR do sensor | a do timer |
 | Repetidas | não | sim; filtro `APP_QUEUE_FRESH_ONLY` (bit de data-ready no `STATUS`) |
 | Custo extra | domínio do GPIOTE em idle | TIMER + HFXO |
-| Risco | data-ready é nível: borda perdida para a aquisição (`START` por software na partida; watchdog em produto, não implementado) | abaixo do ODR real perde sem aviso; `fresh` não confiável < ~100 µs entre leituras |
+| Risco | data-ready é nível: borda perdida para a aquisição (`START` por software na partida; watchdog em produto, não implementado) | abaixo do ODR real perde sem aviso (M, [timer × ODR](timer_dppi_spim/README.md#resultados)); `fresh` não confiável < ~100 µs entre leituras |
 | Regra | pino com uma borda por amostra | timer 5 a 10 % acima do ODR nominal |
 
 ![Blocos do caso 2](docs/blocos_caso2_timer.svg)
 
 ![Timing do caso 2](docs/caso2_timer.svg)
-
-![Timer × ODR](docs/timer_vs_odr.svg)
-
-*TAG, BMI270 a 401,8/s reais (M): timer a 400/s perde ≈ 2/s sem rastro
-(`fresh` 399,8, `skipped` 0); a 404/s não perde (`fresh` 401,6, 19 repetidas
-em 9 s); de 408 a 454/s `fresh` fica em 401,7–402,1.*
 
 Sensor sem data-ready acima de ~10 k/s: aceitar repetidas ou FIFO do
 sensor com *watermark* (uma transação por bloco; não coberta).
@@ -102,37 +97,88 @@ sensor com *watermark* (uma transação por bloco; não coberta).
 | Falha detectável | `late` (wrap tardio, limite superior de perdas), `ovf` (anel pequeno) | `torn` (START durante a cópia); START **antes** da ISR não é detectável |
 | Consumo a 1 600/s, SPIM22 (E) | 48 µA (T = 10 ms), 176 µA (T = 625 µs) | 59 µA |
 | Quando | bloco; qualquer taxa até o teto | latência de uma ISR, timestamp na ISR, ≤ 25 k/s |
+| T, anel, fila | ver [Como escolher, passo 3](#como-escolher) | fila ≥ atraso do consumidor |
 
 Cada amostra passa sozinha pela fila (`k_msgq_put` + `k_msgq_get` + decode
 ≈ 3,5 µs, E): 22 % da CPU a 64 k/s; entrega em bloco não implementada.
+
+### Anel e wrap (modo drenado)
 
 ![Anel, drenagem e wrap](docs/anel_drenagem.svg)
 
 ![Modo por amostra](docs/por_amostra.svg)
 
-### Anel e wrap (modo drenado)
-
 O ponteiro do EasyDMA conta transações iniciadas, não terminadas: a
 drenagem entrega `[tail, head − 1)` e, com até 4 pendentes, espera um tempo
-de transação (`XFER_SETTLE_US` ≈ 21 µs para 17 B, 15 µs para 11 B) e
-entrega também o slot head − 1. Quando o head passa da metade do anel, a
-drenagem habilita uma vez a IRQ de `DMA.RX.READY` (nRF54L) / `STARTED`
-(nRF5340); a ISR escreve `PTR = slot 0` na janela do datasheet
-("imediatamente após STARTED"), com um período de prazo. Um `START` entre a
-limpeza do evento e a escrita usa o slot k + 1: `late` conta e o slot é
-entregue ou pulado, nunca dado antigo. Nas taxas altas a thread espera o
-wrap acordada (`APP_WRAP_AWAKE_BELOW_US`, 64 µs; ≤ min(T/4, 8 períodos +
-8 µs) ≈ 520 µs, bloqueando as threads preemptíveis). Wrap durante o
-assentamento: a drenagem entrega só até o head lido (`wrap_done` é lido
-antes do head).
+de transação e entrega também o slot head − 1. Quando o head passa da
+metade do anel, a drenagem habilita uma vez a IRQ de `DMA.RX.READY`
+(nRF54L) / `STARTED` (nRF5340), cuja ISR escreve `PTR = slot 0` na janela do
+datasheet ("imediatamente após STARTED"). Detalhes do engine no
+[`gpiote_dppi_spim`](gpiote_dppi_spim/README.md#detalhes-do-engine).
 
 | Regra | Valor |
 |---|---|
-| T real | ⌈T/tick⌉ · tick + 1 tick + drenagem: 10 ms → ≈ 10,07 ms, 1 ms → ≈ 1,08 ms, 625 µs → ≈ 710 µs, 100 µs → ≈ 180–190 µs (tick 32 µs nRF54L15, 30,5 µs nRF5340) |
-| Anel | `APP_RING_SLOTS` ≥ 2 × taxa × T real (máx 4 096); voltas entre anel/2 e anel + 8 |
+| Wrap | 1 por volta, armado em head ≥ anel/2; prazo = um período; `late` conta wraps tardios (limite superior de perdas) |
 | Guarda | 8 slots: só acusam o estouro (`ovf`); além deles o EasyDMA corrompe a RAM |
-| Fila | `APP_QUEUE_DEPTH` ≥ amostras por drenagem + atraso do consumidor |
 | Acordar da drenagem | paga a RRAM como qualquer IRQ (`CONFIG_NRF_SYS_EVENT` só em `constlat.conf`): 16,1 µs de média a ≥ 500 µs, 9,0 a 100 µs (M, proxy pela ISR de wrap) |
+| T real, anel, fila | [Como escolher, passo 3](#como-escolher) |
+
+## Como escolher
+
+Entradas: ODR, B (bytes com o comando), SCK máximo, latência aceitável, SoC.
+
+1. **Disparo.** Pino de data-ready → caso 1. Sem pino → caso 2, período =
+   1/(ODR × 1,05..1,10), `APP_QUEUE_FRESH_ONLY=y`. Borda perdida trava a
+   aquisição: prever um watchdog (`START` por software quando `xfers` não
+   avança), não implementado.
+2. **Barramento.** t_trans = B × 8 / SCK + 1,5 µs; sobra = t_per − t_trans
+   ≥ 10 % de t_per ou ≥ 2 µs → ok (nRF5340 validou 89 % de ocupação). Senão
+   subir o SCK: SPIM4 a 16/32 MHz (nRF5340); só SPIM00 a 32 MHz no nRF54L15
+   (não testado; errata 8 se o comando tiver MSB 1).
+3. **Entrega, T, anel e fila.**
+
+   | Requisito | Configuração | Latência | Consumo (E, 1 600/s) |
+   |---|---|---|---|
+   | alguns ms | drenado, T = 10 ms (1 ms acima de ~12 k/s) | ≤ T real (+ 1 período com > 4 por drenagem) | 48 µA |
+   | uma amostra, sem prazo duro | drenado, T ≈ t_per (mín 100 µs) | ≤ T real (625 → ≈ 710 µs) | 176 µA (2,3–3,6× até 16 k/s) |
+   | uma ISR, determinística | `APP_PER_SAMPLE_IRQ=y`, ≤ 25 k/s | entrada da ISR + cópia | 59 µA |
+
+   | Regra | Valor |
+   |---|---|
+   | T real | ⌈T/tick⌉ · tick + 1 tick + drenagem: 10 ms → ≈ 10,07 ms, 1 ms → ≈ 1,08 ms, 625 µs → ≈ 710 µs, 100 µs → ≈ 180–190 µs (tick 32 µs nRF54L15, 30,5 µs nRF5340) |
+   | `APP_RING_SLOTS` | ≥ 2 × taxa × T real (máx 4 096); voltas entre anel/2 e anel + 8 |
+   | `APP_QUEUE_DEPTH` | ≥ amostras por drenagem + atraso do consumidor |
+   | Referências | 1 600/s, T = 10 ms → 16 por drenagem, anel 256, 112 IRQ/s; 64 k/s, T = 1 ms → 69 por drenagem, anel 256 (512 na bancada), ≈ 1 390 IRQ/s; 50 k/s com T = 10 ms pediria anel de 1 000 |
+   | Espera acordada | `APP_WRAP_AWAKE_BELOW_US` (64 µs): ≤ min(T/4, 8 períodos + 8 µs) ≈ 520 µs, bloqueando threads preemptíveis (pilha BLE) |
+   | Timestamp | drenado: índice × período ou contagem do data-ready; por amostra: na ISR |
+   | CPU por amostra | 3,5 µs pela fila em qualquer modo (22 % a 64 k/s); entrega em bloco não implementada |
+
+4. **Onde roda.** SPIM2x no nRF54L15 (M); SPIM00 só pelo passo 2 (E); FLPR
+   para livrar o M33. O prazo do wrap é resolvido pelo engine.
+
+   | SoC / instância | Domínio | Core / SCK máx | Pinos | DPPI | Estado | Quando |
+   |---|---|---|---|---|---|---|
+   | nRF54L15 SPIM20/21/22 | PERI | 16 MHz / 8 MHz (`PRESCALER` 2..126) | P1 (20/21 também P2) | DPPIC20, 16 canais; sem PPIB com o GPIOTE20 | M | caso geral |
+   | nRF54L15 SPIM00 | MCU | 128 MHz / 32 MHz (`PRESCALER` 4..126) | P2 dedicados, drive E0/E1 | DPPIC00, 8 canais; disparo pelo PPIB | E | rajada longa a 64 k/s, > 71–80 k/s, SCK > 8 MHz, MCU já ligado; +300 µA; errata 8 com MSB 1 (`0x83` sim; `0x0B`, `0x23` não; BMI270 aceita modo 3) |
+   | nRF54L15 SPIM30 | LP | 16 MHz / 8 MHz | P0 | DPPIC30, 4 canais | E | variante 100 % LP com GPIOTE30: PERI dorme, ≈ −20 µA (R); é um overlay |
+   | nRF5340 SPIM4 | APP | 64 MHz / 32 MHz em pinos dedicados | P0 | DPPIC, 32 canais | M | única instância com CSN por hardware (e stall em contenção AHB) |
+
+   Na TAG só a SPIM22 alcança o sensor (P1.05/06/08, CSN P1.07, INT P1.04).
+   Teste no nRF54L15 DK: SPIM00 em P2.06/08/09/10; SPIM30 em P0.00–P0.03
+   com a UART0 solta no Board Configurator. Só o overlay muda; a GPPI
+   resolve o PPIB.
+
+| Exemplo resolvido | Configuração | Consumo (E) | Notas |
+|---|---|---|---|
+| BMI270, 1 600 Hz, 17 B, nRF54L15 | caso 1, drenado T = 10 ms, SPIM22 | ≈ 51 µA; T = 625 µs ≈ 197 µA; por amostra ≈ 61 µA | 3 % de ocupação; medido 1 608–1 609/s M33, ≈ 1 607/s FLPR |
+| ADXL382, 64 kHz, 11 B, latência 1 ms, nRF54L15 | caso 1, drenado T = 1 ms, SPIM22 a 8 MHz (80 %) ou SPIM00 a 32 MHz (27 %) | ≈ 0,88 / ≈ 1,20 mA | por amostra fora da faixa (15,6 < 12,5 + 15,5 + 2); errata 8 não atinge `0x23`; não testado |
+| ADXL382, 64 kHz, 11 B, nRF5340 | caso 1, drenado T = 1 ms, SPIM4 a 8 MHz (80 %) ou 16 MHz (45 %) | ≈ 2,2 / ≈ 1,7 mA | SCK máximo e pinos a confirmar; perfil medido a 71,4 k/s com o ADXL362 |
+| Sem data-ready, 16 kHz, 11 B, nRF54L15 | caso 2, timer 59,5 µs (21 %), drenado T = 1 ms | ≈ 0,43 mA | `fresh` não confiável a 59,5 µs (ADXL362 a 25 µs: 543,5 novas/s para ≈ 372) |
+
+![ADXL382 a 64 kHz](docs/caso_adxl382_64k.svg)
+
+Porte do ADXL382 (backend, overlay, verificação): [Adicionar um
+sensor](gpiote_dppi_spim/README.md#adicionar-um-sensor).
 
 ## Limites medidos
 
@@ -153,8 +199,9 @@ até 10 %.
 
 ![Teto do barramento](docs/teto_barramento.svg)
 
-Acima do teto nada no log acusa por si: o critério é o conteúdo. SPIM2x
-com 11 B: 80 k/s pela fórmula, ≈ 71–80 k/s (E); FLPR não medido.
+Acima do teto nada no log acusa por si: o critério é o conteúdo (Z). SPIM2x
+com 11 B: 80 k/s pela fórmula, ≈ 71–80 k/s (E); FLPR não medido. Tabelas por
+passo em [`timer_dppi_spim`](timer_dppi_spim/README.md#resultados).
 
 ### Latência de uma IRQ saindo de idle
 
@@ -167,67 +214,23 @@ com 11 B: 80 k/s pela fórmula, ≈ 71–80 k/s (E); FLPR não medido.
 
 ![M33 × FLPR](docs/m33_vs_flpr_nrf54l15.svg)
 
-O wrap não exige ZLI, RRAM standby nem FLPR (0 `late_wraps` até os tetos);
-esses ficam para ISRs do produto e para livrar o M33. FLPR sem consumo
-medido (`vpr_offloading` 146 → 125 µA, R; DevZone +0,5 mA de idle do VPR, R).
+O wrap não exige ZLI, RRAM standby nem FLPR (0 `late_wraps` até os tetos).
+FLPR sem consumo medido (`vpr_offloading` 146 → 125 µA, R; DevZone +0,5 mA
+de idle do VPR, R).
 
 ### Limite do modo por amostra
 
 | | TAG (17 B) | Thingy:53 (11 B) |
 |---|---|---|
 | Fórmula (E) | 18,5 + 15,5 + 2 ≈ 36 µs (27 k/s) | 12,5 + 26,3 + 2 ≈ 41 µs (24 k/s) |
-| Medido limpo (mínimo da latência acima da transação, `torn` 0) | 40 µs (25 k/s); 30–25 µs marginal (numa captura, ISRs após o `START` seguinte) | 40 µs sem ISR atrasada mas −5 % de novas (em aberto); sem ressalva até 50 µs (20 k/s) |
+| Medido limpo (mínimo da latência acima da transação, `torn` 0) | 40 µs (25 k/s); 30–25 µs marginal | 40 µs sem ISR atrasada mas −5 % de novas (em aberto); sem ressalva até 50 µs (20 k/s) |
 | Falha | 20 µs: `torn` em quase todas; 19 µs: falso limpo | 30 µs: mínimo 0,06 µs e `torn`; 20 µs: −35 % sem `torn` |
-
-## Como escolher
-
-Entradas: ODR, B (bytes com o comando), SCK máximo, latência aceitável, SoC.
-
-1. **Disparo.** Pino de data-ready → caso 1. Sem pino → caso 2, período =
-   1/(ODR × 1,05..1,10), `APP_QUEUE_FRESH_ONLY=y`.
-2. **Barramento.** t_trans = B × 8 / SCK + 1,5 µs; sobra = t_per − t_trans
-   ≥ 10 % de t_per ou ≥ 2 µs → ok (nRF5340 validou 89 % de ocupação). Senão
-   subir o SCK: SPIM4 a 16/32 MHz (nRF5340); só SPIM00 a 32 MHz no nRF54L15
-   (não testado; errata 8 se o comando tiver MSB 1).
-3. **Entrega.**
-
-   | Requisito | Configuração | Latência | Consumo (E, 1 600/s) |
-   |---|---|---|---|
-   | alguns ms | drenado, T = 10 ms (1 ms acima de ~12 k/s) | ≤ T real (+ 1 período com > 4 por drenagem) | 48 µA |
-   | uma amostra, sem prazo duro | drenado, T ≈ t_per (mín 100 µs) | ≤ T real (625 → ≈ 710 µs) | 176 µA (2,3–3,6× até 16 k/s) |
-   | uma ISR, determinística | `APP_PER_SAMPLE_IRQ=y`, ≤ 25 k/s | entrada da ISR + cópia | 59 µA |
-
-   Anel ≥ 2 × taxa × T real; fila ≥ amostras por drenagem + atraso do
-   consumidor. Referências: 1 600/s, T = 10 ms → 16 por drenagem, anel 256,
-   112 IRQ/s; 64 k/s, T = 1 ms → 69 por drenagem, anel 256 (512 na bancada),
-   ≈ 1 390 IRQ/s; 50 k/s com T = 10 ms pediria anel de 1 000. Timestamp no
-   modo drenado: índice × período ou contagem do data-ready.
-4. **Onde roda.** SPIM2x no nRF54L15 (M); SPIM00 só pelo passo 2 (E); FLPR
-   para livrar o M33. O prazo do wrap é resolvido pelo engine.
-
-| Exemplo resolvido | Configuração | Consumo (E) | Notas |
-|---|---|---|---|
-| BMI270, 1 600 Hz, 17 B, nRF54L15 | caso 1, drenado T = 10 ms, SPIM22 | ≈ 51 µA; T = 625 µs ≈ 197 µA; por amostra ≈ 61 µA | 3 % de ocupação; medido 1 608–1 609/s M33, ≈ 1 607/s FLPR |
-| ADXL382, 64 kHz, 11 B, latência 1 ms, nRF54L15 | caso 1, drenado T = 1 ms, SPIM22 a 8 MHz (80 %) ou SPIM00 a 32 MHz (27 %) | ≈ 0,88 / ≈ 1,20 mA | por amostra fora da faixa (15,6 < 12,5 + 15,5 + 2); errata 8 não atinge `0x23`; não testado |
-| ADXL382, 64 kHz, 11 B, nRF5340 | caso 1, drenado T = 1 ms, SPIM4 a 8 MHz (80 %) ou 16 MHz (45 %) | ≈ 2,2 / ≈ 1,7 mA | SCK máximo e pinos a confirmar; perfil medido a 71,4 k/s com o ADXL362 |
-| Sem data-ready, 16 kHz, 11 B, nRF54L15 | caso 2, timer 59,5 µs (21 %), drenado T = 1 ms | ≈ 0,43 mA | `fresh` não confiável a 59,5 µs (ADXL362 a 25 µs: 543,5 novas/s para ≈ 372) |
-
-![ADXL382 a 64 kHz](docs/caso_adxl382_64k.svg)
-
-ADXL382 no `gpiote_dppi_spim`: backend `sensor_adxl382.c` (comando
-`(0x11 << 1) | 1` = `0x23`, 11 B `STATUS0..ZDATA_L`, `fresh_mask 0x01`,
-big-endian, `DEVID_AD` 0xAD, `OP_MODE` 0x26 com ODR a confirmar,
-`DATA_READY` no INT0), binding `adi,adxl382.yaml`, overlay `adxl382@0`,
-`APP_SPI_FREQ_HZ = 16000000` na SPIM4, T = 1 ms. Verificar `xfers` ≈
-64 000/s, `fresh = queued`, `late = ovf = 0`, Z variando.
 
 ## Consumo
 
-Modelo (E, sem PPK2): base 2,9 µA; PERI 20 µA (R); MCU 300 µA só na
-SPIM00; SPIM 0,25 mA (SPIM2x) ou 0,8 mA (SPIM00) × ocupação; CPU 2,6 mA ×
-fração, com o acordar médio medido (16,1 µs a ≥ 500 µs, 9,0 a 100 µs, 1,2
-acordado), 5 µs por drenagem, 3,5 µs por amostra e, por amostra, a entrada
-média da ISR (3,8 µs a 625 µs, 0,4 a 62,5 µs, interpolado) + 1,2 + 2,5 µs.
+Modelo (E, sem PPK2): base + domínios + SPIM × ocupação + CPU 2,6 mA ×
+fração, com o acordar médio medido e 3,5 µs por amostra pela fila.
+Premissas, termos, nRF5340 e leituras em [`docs/POWER.md`](docs/POWER.md).
 Caso 1, 11 B, M33, µA:
 
 | Entrega | Instância | 1 600/s | 16 k/s | 50 k/s |
@@ -242,31 +245,9 @@ Caso 1, 11 B, M33, µA:
 
 ![Consumo por modo de entrega, instância e taxa](docs/consumo_modos_nrf54l15.svg)
 
-- T curto custa 3,6× / 2,3× / 1,4× o T longo (1,6 k / 16 k / 50 k/s): as
-  drenagens (~21 µs, 16,1 de RRAM) mais 15 µs de assentamento.
-- Por amostra custa menos que T = período em toda a faixa e, a 16 k/s,
-  menos que T = 1 ms (245 contra 288): a ISR acorda em 0,4–4 µs de média.
-- SPIM00: +300 µA; só por barramento. 17 B: + 0,25 mA × taxa × 6 µs
-  (SPIM22) ou 0,8 mA × taxa × 1,5 µs (SPIM00).
-- nRF5340 (SPIM4, 11 B): ≈ 0,11 mA a 1 600/s (T = 10 ms), 0,22 (625 µs),
-  0,11 (por amostra); 64 k/s ≈ 2,2 mA a 8 MHz, 1,7 a 16 MHz (T = 1 ms),
-  2,4 / 1,9 com T = 100 µs.
-
 Regra: data-ready + drenado T = 10 ms na SPIM22; por amostra para latência
-de uma amostra (≤ 25 k/s); SPIM00 só por barramento. Detalhes em
-[`docs/POWER.md`](docs/POWER.md).
-
-## nRF54L15: SPIM22, SPIM00, SPIM30
-
-| Instância | Domínio | Core / SCK máx | Pinos | DPPI | Estado | Quando |
-|---|---|---|---|---|---|---|
-| SPIM20/21/22 | PERI | 16 MHz / 8 MHz (`PRESCALER` 2..126) | P1 (20/21 também P2) | DPPIC20, 16 canais; sem PPIB com o GPIOTE20 | M | caso geral |
-| SPIM00 | MCU | 128 MHz / 32 MHz (`PRESCALER` 4..126) | P2 dedicados, drive E0/E1 | DPPIC00, 8 canais; disparo pelo PPIB | E | rajada longa a 64 k/s, > 71–80 k/s, SCK > 8 MHz, MCU já ligado; +300 µA; errata 8 com MSB 1 (`0x83` sim; `0x0B`, `0x23` não; BMI270 aceita modo 3) |
-| SPIM30 | LP | 16 MHz / 8 MHz | P0 | DPPIC30, 4 canais | E | variante 100 % LP com GPIOTE30: PERI dorme, ≈ −20 µA (R); é um overlay |
-
-Na TAG só a SPIM22 alcança o sensor (P1.05/06/08, CSN P1.07, INT P1.04).
-Teste no nRF54L15 DK: SPIM00 em P2.06/08/09/10; SPIM30 em P0.00–P0.03 com a
-UART0 solta no Board Configurator. Só o overlay muda; a GPPI resolve o PPIB.
+de uma amostra (≤ 25 k/s); SPIM00 só por barramento. nRF5340 (SPIM4,
+11 B): ≈ 0,11 mA a 1 600/s, ≈ 2,2 mA a 64 k/s (8 MHz), 1,9–2,5× o nRF54L15.
 
 ## O que está medido e o que é estimado
 
@@ -283,26 +264,19 @@ constant latency: M anterior, sem log. Correntes: nenhuma medida.
 
 ## Achados
 
-- Data-ready dos dois sensores é nível: sem uma primeira leitura a borda
-  nunca vem; `START` por software na partida.
-- nRF54L15, errata 8 da SPIM: CPHA = 0, `PRESCALER > 2` e MSB do comando
-  em 1 corrompem o MOSI; workaround incompatível com DPPI; 8 MHz nas SPIM2x.
-- `IFTIMING.RXDELAY` no nRF54L é em ciclos de 16 MHz: reset (2) amostra o
-  bit seguinte a 8 MHz; usar 1.
-- Wrap logo após `STARTED`/`DMA.RX.READY`, nunca após `END`: a versão
-  anterior colidia com o hardware (MPU/BUS fault a 15 µs no nRF5340).
-- Wrap a cada drenagem deixava a volta nova alcançar a anterior (`queued` >
-  `fresh` em 1–5/s); armar em anel/2 corrigiu (revisão cega do log).
-- Wake-up de idle maior que o período nas taxas altas nos dois SoCs
-  (16,3 µs pela RRAM; 24,4 µs no nRF5340): a espera acordada resolve.
-- Modo por amostra: `START` antes de a ISR entrar mistura duas transações
-  sem sintoma; o sinal é a latência mínima abaixo da transação.
-- `fresh` acima do ODR com leituras < ~100 µs; acima de ~10 k/s o caso 2
-  não garante "só amostras novas".
-- A nrfx deixa a IRQ de `STARTED` ligada ao armar o modo repetido no
-  nRF54L: desligar todas depois de armar.
-- Histórico: contador em TIMER, EGU e ISR zero-latency não existem mais
-  (121 µA no nRF54L15, 475 µA no nRF5340 saíram do modelo).
+Detalhe em cada exemplo; aqui só o resumo.
+
+- Data-ready é nível: `START` por software na partida ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- Errata 8 da SPIM no nRF54L15: 8 MHz nas SPIM2x com comando de MSB 1 ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- `IFTIMING.RXDELAY` no nRF54L em ciclos de 16 MHz: usar 1 ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- Wrap só após `STARTED`/`DMA.RX.READY`, nunca após `END` ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- Wrap a cada drenagem perdia amostras em silêncio; armar em anel/2 ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- nrfx deixa a IRQ de `STARTED` ligada ao armar o modo repetido ([gpiote](gpiote_dppi_spim/README.md#achados)).
+- Wake-up de idle maior que o período nos dois SoCs: espera acordada ([timer](timer_dppi_spim/README.md#achados)).
+- Modo por amostra: `START` antes da ISR não deixa sintoma; olhar a latência mínima ([timer](timer_dppi_spim/README.md#achados)).
+- `fresh` acima do ODR com leituras < ~100 µs ([timer](timer_dppi_spim/README.md#achados)).
+
+Histórico: sem contador, EGU, ZLI.
 
 ## Glossário
 
@@ -310,39 +284,41 @@ constant latency: M anterior, sem log. Correntes: nenhuma medida.
 |---|---|
 | transação, rajada | `START` → bytes → `END`; comando + `STATUS` + dados (11 B ADXL362, 17 B BMI270); no caso 1 = uma amostra |
 | amostra nova, `fresh` | bit de data-ready no `STATUS` da rajada (heurístico < ~100 µs) |
-| período | entre dois `START` (1/ODR no caso 1, do timer no caso 2) |
+| período, ocupação | entre dois `START` (1/ODR no caso 1, do timer no caso 2); ocupação = transação / período |
 | ODR nominal / real | configurado / medido (401,8/s no BMI270, ≈ 372/s no ADXL362): tolerância do oscilador do sensor |
 | data-ready | pino "amostra nova": nível (ADXL362, BMI270 *non-latched*), pulso ou *latched*; push-pull ativo alto |
 | primeiro byte | endereço + R/W (+ auto-incremento): BMI270 `0x83`, ADXL362 `0x0B`, ADXL382 `0x23`; errata 8 só com MSB 1 |
 | byte dummy | BMI270: `0x83` + dummy + `STATUS` (0x03) + 8 B auxiliares + 6 B XYZ (0x0C–0x11) = 17 B; ADXL362: `0x0B` + endereço + `STATUS` + `FIFO_ENTRIES` L/H (0x0C/0x0D, não usados) + 6 B XYZ = 11 B |
 | leitura dummy, `adv_pwr_save`, *config file* | BMI270: a primeira leitura só troca I²C → SPI; o init desliga o modo de economia (1 ms entre escritas); blob `max_fifo` do Zephyr, 328 bytes em 11 blocos, 23 ms (M) |
 | FIFO, *watermark* | buffer do sensor com interrupção por nível; não coberto |
+| SCK, CPOL/CPHA | clock da SPI (8 MHz nas SPIM2x, até 32 MHz na SPIM00 e na SPIM4); modo 0 nos dois sensores (BMI270 aceita modo 3); a errata 8 depende de CPHA |
 | modo repetido | `HOLD_XFER` + `REPEATED_XFER` + `NO_XFER_EVT_HANDLER` (+ `RX_POSTINC`): a SPIM se repete a cada `START` |
-| ZLI | zero-latency interrupt do Zephyr; não usada |
+| EasyDMA, array list | DMA dos periféricos nRF; em array list o ponteiro avança um slot por transação (`RX_POSTINC`) |
 | mg/LSB | ±2 g: BMI270 16 384 LSB/g, ADXL362 1 mg/LSB; `decode()` dá m/s² |
-| CPOL/CPHA | modo 0 nos dois (BMI270 aceita modo 3); a errata 8 depende de CPHA |
 | `CSNDUR`, `RXDELAY`, `PRESCALER` | `IFTIMING` em ciclos do core da SPIM (16 MHz SPIM2x/30, 128 MHz SPIM00; 64 MHz nRF5340, D); `RXDELAY` = atraso do MISO; `PRESCALER` 16/2 = 8 MHz, 128/4 = 32 MHz |
 | errata 8 | nRF54L: CPHA = 0, `PRESCALER > 2`, MSB 1 → MOSI errado |
 | 1,5 µs | custo fixo por transação, inferido do teto (E) |
+| Z | eixo Z decodificado (m/s²) nos relatórios; critério de validade: varia (mín ≠ máx) nas taxas válidas, estreita ou congela acima do teto |
 | modo drenado / por amostra | anel + thread a cada T / um buffer + IRQ de `END` (≤ 25 k/s) |
-| T, T real | `APP_DRAIN_PERIOD_US` (10 ms; mín 100 µs); real = ⌈T/tick⌉ · tick + 1 tick + drenagem |
-| drenagem, assentamento | leitura do head, entrega, wrap armado em anel/2; com ≤ 4 pendentes espera `XFER_SETTLE_US` |
+| T, T real, tick | `APP_DRAIN_PERIOD_US` (10 ms; mín 100 µs); real = ⌈T/tick⌉ · tick + 1 tick + drenagem; tick do kernel = 32 µs (GRTC, nRF54L15) ou 30,5 µs (RTC, nRF5340) |
+| drenagem, assentamento | leitura do head, entrega, wrap armado em anel/2; com ≤ 4 pendentes espera um tempo de transação (`XFER_SETTLE_US`) |
 | slot, anel, volta, guarda | espaço de uma rajada; `APP_RING_SLOTS` + 8; passagem do slot 0 ao wrap; os 8 slots extras |
 | head, tail | próximo slot do EasyDMA (`DMA.RX.PTR`/`RXD.PTR`); próximo a entregar |
-| array list | ponteiro avança um slot por transação (`RX_POSTINC`) |
 | wrap, prazo | ponteiro ao slot 0 na ISR de `DMA.RX.READY`/`STARTED`; prazo = um período |
 | espera acordada | `APP_WRAP_AWAKE_BELOW_US` (64 µs): thread espera o wrap, ≤ min(T/4, 8 períodos + 8 µs) |
-| `late`, `ovf`, `torn` | wraps tardios (limite superior de perdas); voltas até a guarda; cópias atropeladas |
+| `late` = `late_wraps` | wraps escritos depois do `START` seguinte (relatório / varredura); limite superior das amostras puladas |
+| `ovf` = `overflows` | voltas em que o EasyDMA chegou à guarda (relatório / varredura) |
+| `torn` | cópias atropeladas por um `START` no modo por amostra |
 | falso limpo, módulo o período | contadores zerados com latência mínima abaixo da transação = ISR após o `START` seguinte; a captura lê o TIMER zerado a cada `COMPARE` (0,06 µs a 30 µs ≈ 30,06 µs) |
 | janela | período do relatório; nas varreduras só a janela de acomodação de cada passo |
 | `xfers`, `queued`, `dropped`, `skipped` | transações iniciadas; amostras pela fila; fila cheia; repetidas descartadas |
 | `STARTED` / `DMA.RX.READY` | início de transação (nRF5340 / nRF54L, `RXSTARTED` na nrfx): ponteiro liberado |
-| DPPI, GPPI, PPIB | evento publica num canal, tarefa assina; camada da nrfx; ponte entre domínios do nRF54L15 |
+| DPPI, DPPIC, GPPI, PPIB | evento publica num canal, tarefa assina; o controlador de cada domínio; camada da nrfx; ponte entre domínios do nRF54L15 |
 | MCU / PERI / LP | domínios do nRF54L15: SPIM00, TIMER00 / SPIM2x, TIMER2x, GPIOTE20 / SPIM30, GPIOTE30, GRTC (relógio do Zephyr) |
 | RRAM standby | `APP_RRAM_STANDBY`: `RRAMC.POWER.LOWPOWERCONFIG.MODE` em vez do power-down (`tIDLE2CPU` 13 µs, D) |
+| `CONFIG_NRF_SYS_EVENT` | pré-acordar da RRAM por GRTC + DPPI, só para drivers que registram eventos; desligado nos exemplos (só em `constlat.conf`) |
 | FLPR / VPR, `hfxo_launcher` | RISC-V do nRF54L15 em RAM / seu bloco; imagem do app core que o sobe e pede o HFXO |
 | HFXO / HFINT, constant latency | cristal / RC (~0,2 % fora, M sem log); recursos ligados em idle, 0,55 mA (D), não corrige a latência |
-| `ION_IDLE`*n*, `ITIMER`*n*, `ISPIM`*n*, `IAPPCPU`*n* | parâmetros "Current consumption" dos datasheets (*LowLatency* = idle com GPIOTE IN no nRF5340) |
 | drive E0/E1, CSN | classes de corrente do nRF54L15 para a SPIM00 a 32 MHz; chip select da SPIM (`PSEL.CSN`) |
 | TAG, PPK2, Board Configurator | nRF54L15 TAG; Power Profiler Kit II (não usado); ferramenta de pinos das DKs |
 

@@ -34,7 +34,7 @@ nRF Connect SDK v3.4.1 (`nrfutil sdk-manager`); J-Link e log por RTT.
 | `APP_SENSOR_*`, `APP_SENSOR_ODR_HZ` | devicetree, 400 | backend e ODR |
 | `APP_SAMPLE_PERIOD_US` | 1000 | período do TIMER (10 µs a 1 s) |
 | `APP_SWEEP_PERIODS_US`, `APP_SWEEP_STEP_S` | "", 10 | varredura: períodos e segundos por passo |
-| `APP_PER_SAMPLE_IRQ`, `APP_DRAIN_PERIOD_US`, `APP_RING_SLOTS`, `APP_WRAP_AWAKE_BELOW_US`, `APP_QUEUE_DEPTH` | n, 10000, 256, 64, 256 | como no `gpiote_dppi_spim` |
+| `APP_PER_SAMPLE_IRQ`, `APP_DRAIN_PERIOD_US`, `APP_RING_SLOTS`, `APP_WRAP_AWAKE_BELOW_US`, `APP_QUEUE_DEPTH` | n, 10000, 256, 64, 256 | como no `gpiote_dppi_spim`; regras de T, anel e fila na [raiz, Como escolher, passo 3](../README.md#como-escolher) |
 | `APP_QUEUE_FRESH_ONLY` | n | filtro na entrega (drenagem ou ISR de `END`); `skipped` conta as repetidas |
 | `APP_SPI_FREQ_HZ`, `APP_SPI_CSN_DURATION`, `APP_SPI_RX_DELAY` | 4 MHz, 2, −1 | SPIM (8 MHz e `RXDELAY` 1 na TAG) |
 | `APP_REQUEST_HFXO`, `APP_REPORT_PERIOD_MS` | y, 1000 | TIMER exato; relatório |
@@ -78,13 +78,19 @@ acrescentar `overlay-rtt.conf`. Captura: `tools\flash_and_capture.ps1
 
 ## Teste
 
-Relatório do `gpiote_dppi_spim` mais `skipped`; `queued` segue o timer (sem
-filtro) ou o ODR real (com filtro), `fresh` o ODR real (heurístico
-< ~100 µs). Na varredura cada passo descarta o primeiro segundo e imprime
-totais (diferença no passo); o relatório por segundo só sai na janela de
-acomodação de cada passo, e dela vêm as faixas de Z. A latência
-(`APP_WRAP_LATENCY_STATS`) é módulo o período. Teste bom: `late_wraps =
-overflows = torn = 0`, `fresh/s` no ODR real, Z variando.
+| Campo (relatório / varredura) | Significado | Teste bom |
+|---|---|---|
+| `xfers` / `xfers/s` | transações iniciadas | a taxa do timer |
+| `queued` / `queued/s` | amostras pela fila: a taxa do timer sem filtro, o ODR real com filtro | = `fresh` com filtro |
+| `fresh` / `fresh/s` | amostras com data-ready ativo (heurístico < ~100 µs entre leituras) | o ODR real |
+| `skipped` | repetidas descartadas pelo filtro | `xfers` − `queued` |
+| `dropped`, `late` / `late_wraps`, `ovf` / `overflows`, `torn` | fila cheia; wraps tardios (limite superior de perdas); voltas até a guarda; cópias atropeladas | 0 |
+| latência (`APP_WRAP_LATENCY_STATS`) | trigger → ISR de wrap ou de `END`, módulo o período | mínimo acima da transação |
+
+Na varredura cada passo descarta o primeiro segundo (a janela de
+acomodação, única com relatório por segundo e faixa de Z) e imprime os
+totais do passo. Teste bom: contadores de falha em 0, `fresh/s` no ODR
+real, Z variando, latência mínima acima da transação.
 
 ## Saída de exemplo
 
@@ -102,9 +108,11 @@ TAG, `bench/bus-max-tag.conf` (`test-logs/u_tag_busmax.log`):
 ## Resultados
 
 M, `test-logs/`, 8 MHz, mecanismo atual, `late = ovf = 0` em todos os
-passos salvo indicação.
+passos salvo indicação; faixas de Z da janela de acomodação de cada passo.
 
 **Timer × ODR** (TAG, BMI270 a 401,8/s, `sweep-tag.conf`, `u_tag_timer_vs_odr.log`):
+
+![Timer × ODR](../docs/timer_vs_odr.svg)
 
 | Timer | Transações/s | `fresh`/s | `skipped` em 9 s | Perde? |
 |---|---|---|---|---|
@@ -118,6 +126,8 @@ Abaixo do ODR real perde em silêncio; 0,5 % acima já não. Regra: timer 5 a
 
 **Teto do barramento** (drenado, T = 1 ms, anel 512, fila 1024, filtro;
 `xfers` avança mesmo acima do teto: validade pelo conteúdo):
+
+![Teto do barramento](../docs/teto_barramento.svg)
 
 | TAG M33, 17 B (`u_tag_busmax.log`) | Transações/s | `fresh`/s | Wrap (mín / média / máx) | Z na janela |
 |---|---|---|---|---|
